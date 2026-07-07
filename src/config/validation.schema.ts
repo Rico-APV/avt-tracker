@@ -19,4 +19,8 @@ export const validationSchema = Joi.object({
   TRACKER_TCP_PORT: Joi.number().port().default(6001),
   TRACKER_TCP_SOCKET_TIMEOUT_MS: Joi.number().integer().min(0).default(900000),
   TRACKER_TCP_MAX_BUFFER_BYTES: Joi.number().integer().min(1024).default(65536),
+
+  AWS_REGION: Joi.string().default('us-east-2'),
+  // Left optional: unset in local dev, the publisher just no-ops.
+  SNS_TOPIC_ARN: Joi.string().optional().allow(''),
 });

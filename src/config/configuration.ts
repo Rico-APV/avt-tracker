@@ -16,6 +16,11 @@ export interface AppConfig {
     socketTimeoutMs: number;
     maxBufferBytes: number;
   };
+  notifications: {
+    awsRegion: string;
+    /** Undefined disables publishing entirely (e.g. local dev). */
+    snsTopicArn: string | undefined;
+  };
 }
 
 export default (): AppConfig => ({
@@ -44,5 +49,9 @@ export default (): AppConfig => ({
       process.env.TRACKER_TCP_MAX_BUFFER_BYTES ?? '65536',
       10,
     ),
+  },
+  notifications: {
+    awsRegion: process.env.AWS_REGION ?? 'us-east-2',
+    snsTopicArn: process.env.SNS_TOPIC_ARN || undefined,
   },
 });
