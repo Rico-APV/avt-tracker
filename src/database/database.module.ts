@@ -26,6 +26,13 @@ import { AppConfig } from '../config/configuration';
           // through a reviewed migration file instead.
           synchronize: db.synchronize,
           logging: db.logging,
+          // RDS Postgres rejects plaintext connections by default
+          // ("no pg_hba.conf entry ... no encryption"). rejectUnauthorized
+          // is false because we're not bundling the RDS CA cert yet -
+          // this still encrypts the connection, it just doesn't verify
+          // the server certificate chain. Tighten this later by loading
+          // the RDS CA bundle and setting rejectUnauthorized: true.
+          ssl: db.ssl ? { rejectUnauthorized: false } : false,
         };
       },
     }),

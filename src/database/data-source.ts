@@ -18,4 +18,10 @@ export default new DataSource({
   entities: [TrackerDevice, TrackerReport],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,
+  // See DatabaseModule for why this is conditional (RDS requires it,
+  // local docker-compose Postgres doesn't have it configured).
+  ssl:
+    (process.env.DB_SSL ?? 'false') === 'true'
+      ? { rejectUnauthorized: false }
+      : false,
 });

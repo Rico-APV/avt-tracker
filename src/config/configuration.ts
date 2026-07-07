@@ -8,6 +8,7 @@ export interface AppConfig {
     database: string;
     synchronize: boolean;
     logging: boolean;
+    ssl: boolean;
   };
   tracker: {
     tcpHost: string;
@@ -27,6 +28,10 @@ export default (): AppConfig => ({
     database: process.env.DB_DATABASE ?? 'avt_tracker',
     synchronize: (process.env.DB_SYNCHRONIZE ?? 'false') === 'true',
     logging: (process.env.DB_LOGGING ?? 'false') === 'true',
+    // RDS Postgres enforces SSL by default; the local docker-compose
+    // Postgres doesn't have it configured at all, so this must stay
+    // opt-in per environment rather than always-on.
+    ssl: (process.env.DB_SSL ?? 'false') === 'true',
   },
   tracker: {
     tcpHost: process.env.TRACKER_TCP_HOST ?? '0.0.0.0',
