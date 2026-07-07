@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: avt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-avt}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-avt}
+      POSTGRES_DB: ${DB_DATABASE:-avt_tracker}
+    ports:
+      # Host-side port is deliberately not 5432: on Windows a native/local
+      # Postgres install listening on 5432 can shadow Docker Desktop's
+      # port-forwarding for `localhost`, silently routing connections to
+      # the wrong Postgres instance. 5433 sidesteps that entirely.
+      - '${DB_PORT:-5433}:5432'
+    volumes:
+      - avt-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-avt} -d ${DB_DATABASE:-avt_tracker}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  avt-postgres-data:

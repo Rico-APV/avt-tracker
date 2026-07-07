@@ -1,0 +1,120 @@
+name: Deploy to Amazon ECS
+
+on:
+  push:
+    branches: ["main", "develop"]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: avt-tracker
+  ECS_TASK_DEFINITION: .aws/task-definition.json
+  CONTAINER_NAME: avt-tracker
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+
+    # Define environment dynamically, same as the rest of our ECS pipelines.
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'qa' }}
+
+    env:
+      ECS_SERVICE: ${{ github.ref == 'refs/heads/main' && 'avt-tracker-service' || 'avt-tracker-service-qa' }}
+      ECS_CLUSTER: ${{ github.ref == 'refs/heads/main' && 'avt-tracker-cluster' || 'avt-tracker-cluster-qa' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+        run: |
+          # Detect branch and set tag
+          if [ "${GITHUB_REF##*/}" = "main" ]; then
+            IMAGE_TAG="prod-${GITHUB_SHA}"
+          else
+            IMAGE_TAG="qa-${GITHUB_SHA}"
+          fi
+
+          echo "Building Docker image with tag: $IMAGE_TAG"
+
+          # Build and push Docker image
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+          # Save image reference for next steps
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.ECS_TASK_DEFINITION }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      # Migrations run as a one-off Fargate task using the SAME image that's
+      # about to be deployed, with the container's default command
+      # overridden - see the Dockerfile/README for why this can just be
+      # `node node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js`
+      # with no extra tooling baked into the runtime image. This runs BEFORE
+      # the service is updated so schema changes are always in place before
+      # new application code that depends on them starts serving traffic.
+      - name: Register task definition revision
+        id: register-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://${{ steps.task-def.outputs.task-definition }} \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task-definition-arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Run database migrations
+        env:
+          TASK_DEF_ARN: ${{ steps.register-task-def.outputs.task-definition-arn }}
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --launch-type FARGATE \
+            --task-definition "$TASK_DEF_ARN" \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.ECS_SUBNET_IDS }}],securityGroups=[${{ secrets.ECS_SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}" \
+            --overrides '{"containerOverrides":[{"name":"${{ env.CONTAINER_NAME }}","command":["node","node_modules/typeorm/cli.js","migration:run","-d","dist/database/data-source.js"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "${{ env.ECS_CLUSTER }}" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "${{ env.ECS_CLUSTER }}" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+
+          echo "Migration task exit code: $EXIT_CODE"
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration task failed (exit code $EXIT_CODE) - aborting deploy."
+            aws logs tail "/ecs/avt-tracker" --since 10m || true
+            exit 1
+          fi
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
