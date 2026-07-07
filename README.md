@@ -127,6 +127,22 @@ verify the TCP ingest pipeline is working, not as a production API surface.
   dashboard).
 - `GET /tracker/monitor/events?limit=` - the most recent reports across
   *all* devices, newest first (a live event feed).
+- `GET /tracker/events/unread?limit=` - polling alternative to the SNS
+  push (see below): returns domain events (`tracker.device.connected`/
+  `disconnected`/`tracker.report.received`) not yet fetched by a consumer,
+  oldest first (default 100, max 500), and **marks them delivered as a
+  side effect of the call** - a repeat call only returns what's new since
+  the last poll. Prefer the SNS/SQS path if you need at-least-once
+  delivery without risking a dropped HTTP response losing events.
+
+## Cross-service events
+
+Every `tracker.device.connected`/`disconnected`/`tracker.report.received`
+domain event is fanned out two ways (see
+`TrackerEventPublisherService`): a best-effort push to an SNS topic
+(`SNS_TOPIC_ARN`), and a durable row in Postgres backing the
+`/tracker/events/unread` endpoint above. Both carry the same versioned
+envelope: `{ eventType, version, occurredAt, imei, data }`.
 
 ## Architecture
 

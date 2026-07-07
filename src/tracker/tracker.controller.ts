@@ -7,8 +7,10 @@ import {
   Query,
 } from '@nestjs/common';
 import { ListReportsQueryDto } from './dto/list-reports-query.dto';
+import { ListUnreadEventsQueryDto } from './dto/list-unread-events-query.dto';
 import { TrackerConnectionRegistryService } from './tcp/tracker-connection-registry.service';
 import { TrackerPersistenceService } from './persistence/tracker-persistence.service';
+import { TrackerEventOutboxService } from './events/tracker-event-outbox.service';
 
 /**
  * Read-only HTTP surface for whatever the TCP listener has stored so far.
@@ -20,6 +22,7 @@ export class TrackerController {
   constructor(
     private readonly persistence: TrackerPersistenceService,
     private readonly registry: TrackerConnectionRegistryService,
+    private readonly eventOutbox: TrackerEventOutboxService,
   ) {}
 
   @Get('devices')
@@ -121,6 +124,35 @@ export class TrackerController {
         batteryLevelPercent: report.batteryLevelPercent,
         generatedAt: report.generatedAt,
         receivedAt: report.receivedAt,
+      })),
+    };
+  }
+
+  /**
+   * Polling alternative to the SNS push (see TrackerEventPublisherService):
+   * a consumer that can't/doesn't want to run an SQS listener can pull from
+   * here instead. Every event returned is immediately marked `delivered`,
+   * so a subsequent call only ever returns what's new since the last poll
+   * - callers that need at-least-once semantics without losing events on a
+   * dropped response should prefer the SNS/SQS path instead.
+   */
+  @Get('events/unread')
+  async listUnreadEvents(@Query() query: ListUnreadEventsQueryDto) {
+    const limit = query.limit && query.limit > 0 ? query.limit : 100;
+    const events = await this.eventOutbox.findUnread(limit);
+
+    if (events.length > 0) {
+      await this.eventOutbox.markDelivered(events.map((event) => event.id));
+    }
+
+    return {
+      count: events.length,
+      events: events.map((event) => ({
+        id: event.id,
+        eventType: event.eventType,
+        imei: event.imei,
+        occurredAt: event.occurredAt,
+        data: event.data,
       })),
     };
   }

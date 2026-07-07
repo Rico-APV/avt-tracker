@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TrackerDevice } from '../tracker/entities/tracker-device.entity';
 import { TrackerReport } from '../tracker/entities/tracker-report.entity';
+import { TrackerEvent } from '../tracker/entities/tracker-event.entity';
 import { AppConfig } from '../config/configuration';
 
 @Module({
@@ -19,7 +20,7 @@ import { AppConfig } from '../config/configuration';
           username: db.username,
           password: db.password,
           database: db.database,
-          entities: [TrackerDevice, TrackerReport],
+          entities: [TrackerDevice, TrackerReport, TrackerEvent],
           migrations: [__dirname + '/migrations/*{.ts,.js}'],
           migrationsRun: false,
           // Never enable in production: schema drift should always go

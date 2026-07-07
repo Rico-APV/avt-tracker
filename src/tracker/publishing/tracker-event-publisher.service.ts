@@ -9,6 +9,7 @@ import {
   TrackerDeviceDisconnectedEvent,
 } from '../events/tracker-device-connection.event';
 import { TrackerReportReceivedEvent } from '../events/tracker-report-received.event';
+import { TrackerEventOutboxService } from '../events/tracker-event-outbox.service';
 
 /**
  * Stable, versioned envelope published to SNS for every tracker domain
@@ -23,15 +24,24 @@ interface TrackerEventEnvelope {
   data: Record<string, unknown>;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
- * Mirrors the in-process tracker domain events (`@nestjs/event-emitter`)
- * out to an SNS topic, so other services (in other VPCs/accounts) can react
- * to device activity without coupling to this service's TCP/DB internals.
+ * Fans the in-process tracker domain events (`@nestjs/event-emitter`) out
+ * to two independent destinations, so other services (in other VPCs/
+ * accounts) can react to device activity without coupling to this
+ * service's TCP/DB internals:
  *
- * Fire-and-forget by design: a publish failure is logged but never
- * propagated, so a flaky SNS call can't affect TCP ack latency or crash the
- * connection - this listener runs fully decoupled from the event emitter
- * that triggered it.
+ * - SNS, for low-latency push (near real time, best-effort).
+ * - `TrackerEventOutboxService` (Postgres), a durable log a consumer can
+ *   poll via `GET /tracker/events/unread` to catch up on anything it
+ *   missed - e.g. it was down when the SNS message went out.
+ *
+ * Both are fire-and-forget from the event emitter's point of view: a
+ * failure in either is logged but never thrown, so neither can affect TCP
+ * ack latency or crash the connection that triggered the event.
  */
 @Injectable()
 export class TrackerEventPublisherService implements OnModuleDestroy {
@@ -39,7 +49,10 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
   private readonly client?: SNSClient;
   private readonly topicArn?: string;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+  constructor(
+    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly outbox: TrackerEventOutboxService,
+  ) {
     const notifications = this.configService.get('notifications', {
       infer: true,
     });
@@ -59,14 +72,14 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
 
   @OnEvent(TRACKER_EVENTS.REPORT_RECEIVED)
   handleReportReceived(event: TrackerReportReceivedEvent): void {
-    void this.publish(TRACKER_EVENTS.REPORT_RECEIVED, event.imei, {
+    this.dispatch(TRACKER_EVENTS.REPORT_RECEIVED, event.imei, {
       report: event.saved,
     });
   }
 
   @OnEvent(TRACKER_EVENTS.DEVICE_CONNECTED)
   handleDeviceConnected(event: TrackerDeviceConnectedEvent): void {
-    void this.publish(TRACKER_EVENTS.DEVICE_CONNECTED, event.imei, {
+    this.dispatch(TRACKER_EVENTS.DEVICE_CONNECTED, event.imei, {
       remoteAddress: event.remoteAddress,
       remotePort: event.remotePort,
       connectedAt: event.connectedAt.toISOString(),
@@ -75,17 +88,36 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
 
   @OnEvent(TRACKER_EVENTS.DEVICE_DISCONNECTED)
   handleDeviceDisconnected(event: TrackerDeviceDisconnectedEvent): void {
-    void this.publish(TRACKER_EVENTS.DEVICE_DISCONNECTED, event.imei, {
+    this.dispatch(TRACKER_EVENTS.DEVICE_DISCONNECTED, event.imei, {
       remoteAddress: event.remoteAddress,
       remotePort: event.remotePort,
       disconnectedAt: event.disconnectedAt.toISOString(),
     });
   }
 
+  private dispatch(
+    eventType: string,
+    imei: string,
+    data: Record<string, unknown>,
+  ): void {
+    const occurredAt = new Date();
+
+    void this.outbox
+      .record(eventType, imei, data, occurredAt)
+      .catch((error: unknown) =>
+        this.logger.error(
+          `Failed to record ${eventType} in outbox for IMEI ${imei}: ${errorMessage(error)}`,
+        ),
+      );
+
+    void this.publish(eventType, imei, data, occurredAt);
+  }
+
   private async publish(
     eventType: string,
     imei: string,
     data: Record<string, unknown>,
+    occurredAt: Date,
   ): Promise<void> {
     if (!this.client || !this.topicArn) {
       return;
@@ -94,7 +126,7 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
     const envelope: TrackerEventEnvelope = {
       eventType,
       version: 1,
-      occurredAt: new Date().toISOString(),
+      occurredAt: occurredAt.toISOString(),
       imei,
       data,
     };
@@ -111,9 +143,8 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
         }),
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       this.logger.error(
-        `Failed to publish ${eventType} for IMEI ${imei}: ${message}`,
+        `Failed to publish ${eventType} for IMEI ${imei}: ${errorMessage(error)}`,
       );
     }
   }

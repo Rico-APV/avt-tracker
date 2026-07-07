@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { DataSource } from 'typeorm';
 import { TrackerDevice } from '../tracker/entities/tracker-device.entity';
 import { TrackerReport } from '../tracker/entities/tracker-report.entity';
+import { TrackerEvent } from '../tracker/entities/tracker-event.entity';
 
 /**
  * Standalone DataSource used only by the TypeORM CLI (migration
@@ -15,7 +16,7 @@ export default new DataSource({
   username: process.env.DB_USERNAME ?? 'avt',
   password: process.env.DB_PASSWORD ?? 'avt',
   database: process.env.DB_DATABASE ?? 'avt_tracker',
-  entities: [TrackerDevice, TrackerReport],
+  entities: [TrackerDevice, TrackerReport, TrackerEvent],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,
   // See DatabaseModule for why this is conditional (RDS requires it,

@@ -8,6 +8,7 @@ import {
 import { TrackerReportReceivedEvent } from '../events/tracker-report-received.event';
 import { ParsedTrackerFrame } from '../parser/tracker-parser.types';
 import { TrackerReport } from '../entities/tracker-report.entity';
+import { TrackerEventOutboxService } from '../events/tracker-event-outbox.service';
 
 interface PublishCommandLike {
   input: {
@@ -34,7 +35,19 @@ function buildConfigService(snsTopicArn: string | undefined): ConfigService {
   } as unknown as ConfigService;
 }
 
+function buildOutbox(): {
+  service: TrackerEventOutboxService;
+  record: jest.Mock;
+} {
+  const record = jest.fn().mockResolvedValue(undefined);
+  return {
+    service: { record } as unknown as TrackerEventOutboxService,
+    record,
+  };
+}
+
 async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
 }
@@ -46,8 +59,10 @@ describe('TrackerEventPublisherService', () => {
   });
 
   it('does nothing when SNS_TOPIC_ARN is not configured', async () => {
+    const outbox = buildOutbox();
     const service = new TrackerEventPublisherService(
       buildConfigService(undefined),
+      outbox.service,
     );
 
     service.handleDeviceConnected(
@@ -56,11 +71,14 @@ describe('TrackerEventPublisherService', () => {
     await flushMicrotasks();
 
     expect(sendMock).not.toHaveBeenCalled();
+    expect(outbox.record).toHaveBeenCalledTimes(1);
   });
 
   it('publishes a report-received event with a versioned envelope', async () => {
+    const outbox = buildOutbox();
     const service = new TrackerEventPublisherService(
       buildConfigService('arn:aws:sns:us-east-2:123456789012:tracker-events'),
+      outbox.service,
     );
 
     const savedReport = {
@@ -88,12 +106,21 @@ describe('TrackerEventPublisherService', () => {
     expect(command.input.MessageAttributes.eventType.StringValue).toBe(
       TRACKER_EVENTS.REPORT_RECEIVED,
     );
+
+    expect(outbox.record).toHaveBeenCalledTimes(1);
+    expect(outbox.record).toHaveBeenCalledWith(
+      TRACKER_EVENTS.REPORT_RECEIVED,
+      TEST_IMEI,
+      { report: savedReport },
+      expect.any(Date),
+    );
   });
 
   it('logs and swallows errors instead of throwing when publish fails', async () => {
     sendMock.mockRejectedValue(new Error('boom'));
     const service = new TrackerEventPublisherService(
       buildConfigService('arn:aws:sns:us-east-2:123456789012:tracker-events'),
+      buildOutbox().service,
     );
 
     expect(() =>
@@ -101,6 +128,22 @@ describe('TrackerEventPublisherService', () => {
         new TrackerDeviceDisconnectedEvent(TEST_IMEI, '1.2.3.4', 999),
       ),
     ).not.toThrow();
+    await flushMicrotasks();
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still publishes to SNS even if recording to the outbox fails', async () => {
+    const outbox = buildOutbox();
+    outbox.record.mockRejectedValue(new Error('db down'));
+    const service = new TrackerEventPublisherService(
+      buildConfigService('arn:aws:sns:us-east-2:123456789012:tracker-events'),
+      outbox.service,
+    );
+
+    service.handleDeviceConnected(
+      new TrackerDeviceConnectedEvent(TEST_IMEI, '1.2.3.4', 12345),
+    );
     await flushMicrotasks();
 
     expect(sendMock).toHaveBeenCalledTimes(1);
