@@ -48,7 +48,9 @@
       "Bash(docker rm *)",
       "Bash(npx --yes js-yaml .github/workflows/deploy.yml)",
       "Bash(pnpm dlx *)",
-      "Bash(docker rmi *)"
+      "Bash(docker rmi *)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\ANGELR~1\\AppData\\Local\\Temp\\claude\\c--Users-Angel-Rico-Documents-APV-systems-avt\\5446fd51-4135-4777-9c28-e1771fd9994e\\scratchpad"
