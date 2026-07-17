@@ -10,6 +10,12 @@ import {
 } from '../events/tracker-device-connection.event';
 import { TrackerReportReceivedEvent } from '../events/tracker-report-received.event';
 import { TrackerEventOutboxService } from '../events/tracker-event-outbox.service';
+import { STARLINK_EVENTS } from '../../starlink/events/starlink-events.constants';
+import {
+  StarlinkDeviceConnectedEvent,
+  StarlinkDeviceDisconnectedEvent,
+} from '../../starlink/events/starlink-device-connection.event';
+import { StarlinkReportReceivedEvent } from '../../starlink/events/starlink-report-received.event';
 
 /**
  * Stable, versioned envelope published to SNS for every tracker domain
@@ -89,6 +95,38 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
   @OnEvent(TRACKER_EVENTS.DEVICE_DISCONNECTED)
   handleDeviceDisconnected(event: TrackerDeviceDisconnectedEvent): void {
     this.dispatch(TRACKER_EVENTS.DEVICE_DISCONNECTED, event.imei, {
+      remoteAddress: event.remoteAddress,
+      remotePort: event.remotePort,
+      disconnectedAt: event.disconnectedAt.toISOString(),
+    });
+  }
+
+  // StarLink events reuse the same outbox table + SNS topic as the AVT110
+  // tracker events above - one cross-service event stream regardless of
+  // which vendor's device produced it. `imei` in the shared envelope/table
+  // holds the StarLink deviceId here (just a device identifier column,
+  // named for its AVT110 origin).
+  @OnEvent(STARLINK_EVENTS.REPORT_RECEIVED)
+  handleStarlinkReportReceived(event: StarlinkReportReceivedEvent): void {
+    this.dispatch(STARLINK_EVENTS.REPORT_RECEIVED, event.deviceId, {
+      report: event.saved,
+    });
+  }
+
+  @OnEvent(STARLINK_EVENTS.DEVICE_CONNECTED)
+  handleStarlinkDeviceConnected(event: StarlinkDeviceConnectedEvent): void {
+    this.dispatch(STARLINK_EVENTS.DEVICE_CONNECTED, event.deviceId, {
+      remoteAddress: event.remoteAddress,
+      remotePort: event.remotePort,
+      connectedAt: event.connectedAt.toISOString(),
+    });
+  }
+
+  @OnEvent(STARLINK_EVENTS.DEVICE_DISCONNECTED)
+  handleStarlinkDeviceDisconnected(
+    event: StarlinkDeviceDisconnectedEvent,
+  ): void {
+    this.dispatch(STARLINK_EVENTS.DEVICE_DISCONNECTED, event.deviceId, {
       remoteAddress: event.remoteAddress,
       remotePort: event.remotePort,
       disconnectedAt: event.disconnectedAt.toISOString(),

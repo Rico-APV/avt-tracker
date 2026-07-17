@@ -16,6 +16,12 @@ export interface AppConfig {
     socketTimeoutMs: number;
     maxBufferBytes: number;
   };
+  starlink: {
+    tcpHost: string;
+    tcpPort: number;
+    socketTimeoutMs: number;
+    maxBufferBytes: number;
+  };
   notifications: {
     awsRegion: string;
     /** Undefined disables publishing entirely (e.g. local dev). */
@@ -47,6 +53,20 @@ export default (): AppConfig => ({
     ),
     maxBufferBytes: parseInt(
       process.env.TRACKER_TCP_MAX_BUFFER_BYTES ?? '65536',
+      10,
+    ),
+  },
+  starlink: {
+    tcpHost: process.env.STARLINK_TCP_HOST ?? '0.0.0.0',
+    // 5136 is Traccar's documented default port for this protocol - see
+    // StarlinkParserService docs for why Traccar's decoder was the source.
+    tcpPort: parseInt(process.env.STARLINK_TCP_PORT ?? '5136', 10),
+    socketTimeoutMs: parseInt(
+      process.env.STARLINK_TCP_SOCKET_TIMEOUT_MS ?? '900000',
+      10,
+    ),
+    maxBufferBytes: parseInt(
+      process.env.STARLINK_TCP_MAX_BUFFER_BYTES ?? '8192',
       10,
     ),
   },

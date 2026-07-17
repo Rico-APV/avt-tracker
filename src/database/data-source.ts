@@ -3,6 +3,8 @@ import { DataSource } from 'typeorm';
 import { TrackerDevice } from '../tracker/entities/tracker-device.entity';
 import { TrackerReport } from '../tracker/entities/tracker-report.entity';
 import { TrackerEvent } from '../tracker/entities/tracker-event.entity';
+import { StarlinkDevice } from '../starlink/entities/starlink-device.entity';
+import { StarlinkReport } from '../starlink/entities/starlink-report.entity';
 
 /**
  * Standalone DataSource used only by the TypeORM CLI (migration
@@ -16,7 +18,13 @@ export default new DataSource({
   username: process.env.DB_USERNAME ?? 'avt',
   password: process.env.DB_PASSWORD ?? 'avt',
   database: process.env.DB_DATABASE ?? 'avt_tracker',
-  entities: [TrackerDevice, TrackerReport, TrackerEvent],
+  entities: [
+    TrackerDevice,
+    TrackerReport,
+    TrackerEvent,
+    StarlinkDevice,
+    StarlinkReport,
+  ],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,
   // See DatabaseModule for why this is conditional (RDS requires it,

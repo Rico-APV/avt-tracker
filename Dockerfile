@@ -49,8 +49,9 @@ COPY package.json ./
 
 USER nestjs
 
-# HTTP API (PORT) and the AVT110 raw TCP listener (TRACKER_TCP_PORT).
-# Actual bound ports are controlled by env vars at runtime - see .env.example.
-EXPOSE 3000 6001
+# HTTP API (PORT), the AVT110 raw TCP listener (TRACKER_TCP_PORT), and the
+# StarLink raw TCP listener (STARLINK_TCP_PORT). Actual bound ports are
+# controlled by env vars at runtime - see .env.example.
+EXPOSE 3000 6001 5136
 
 CMD ["node", "dist/main.js"]

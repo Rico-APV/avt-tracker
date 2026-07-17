@@ -4,6 +4,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { TrackerDevice } from '../tracker/entities/tracker-device.entity';
 import { TrackerReport } from '../tracker/entities/tracker-report.entity';
 import { TrackerEvent } from '../tracker/entities/tracker-event.entity';
+import { StarlinkDevice } from '../starlink/entities/starlink-device.entity';
+import { StarlinkReport } from '../starlink/entities/starlink-report.entity';
 import { AppConfig } from '../config/configuration';
 
 @Module({
@@ -20,7 +22,13 @@ import { AppConfig } from '../config/configuration';
           username: db.username,
           password: db.password,
           database: db.database,
-          entities: [TrackerDevice, TrackerReport, TrackerEvent],
+          entities: [
+            TrackerDevice,
+            TrackerReport,
+            TrackerEvent,
+            StarlinkDevice,
+            StarlinkReport,
+          ],
           migrations: [__dirname + '/migrations/*{.ts,.js}'],
           migrationsRun: false,
           // Never enable in production: schema drift should always go

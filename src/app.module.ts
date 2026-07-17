@@ -7,6 +7,7 @@ import configuration from './config/configuration';
 import { validationSchema } from './config/validation.schema';
 import { DatabaseModule } from './database/database.module';
 import { TrackerModule } from './tracker/tracker.module';
+import { StarlinkModule } from './starlink/starlink.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { TrackerModule } from './tracker/tracker.module';
     EventEmitterModule.forRoot(),
     DatabaseModule,
     TrackerModule,
+    StarlinkModule,
   ],
   controllers: [AppController],
   providers: [AppService],

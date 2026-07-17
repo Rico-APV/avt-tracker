@@ -6,13 +6,20 @@ A NestJS service that:
   connections and decodes the AVT110 Tracker Protocol (R6.01) frames they
   send (`+RPT`, `-RPT`, `+HBD`, ...), replying with `+SACK`/`+SHBD` as the
   protocol requires.
+- Listens on a **second, independent raw TCP socket** for ERM/StarLink
+  trackers (StarLink Tracker, TrackerSF, ...) and decodes their "SLU"
+  text protocol.
 - Persists what it decodes to PostgreSQL (device snapshot + full report
-  history, including the raw hex payload for later reprocessing).
+  history, including the raw payload for later reprocessing).
 - Exposes a small read-only HTTP API to inspect what's been received.
 
 This follows the vendor's "AVT110 Tracker Protocol R6.01" document - see
 [`docs/README.md`](docs/README.md) for where to drop that PDF in this repo
-and which sections map to which parts of the parser.
+and which sections map to which parts of the parser. The StarLink side has
+no equivalent PDF (ERM's own protocol docs at sweb.erm.co.il/protocol are
+login-gated) - see `src/starlink/parser/starlink-parser.service.ts` for
+where that format was actually sourced from (Traccar's open-source
+decoder) and its known gaps.
 
 ## Requirements
 
@@ -111,6 +118,8 @@ See [`.env.example`](.env.example) for the full list with defaults. Summary:
 | `TRACKER_TCP_HOST` / `TRACKER_TCP_PORT` | Where the raw TCP listener for devices binds. This is **separate** from `PORT` (the HTTP API) - devices never speak HTTP |
 | `TRACKER_TCP_SOCKET_TIMEOUT_MS` | Idle socket timeout; devices that go silent longer than this get disconnected (0 disables it) |
 | `TRACKER_TCP_MAX_BUFFER_BYTES` | Safety cap on the per-connection receive buffer before it's assumed desynced and dropped |
+| `STARLINK_TCP_HOST` / `STARLINK_TCP_PORT` | Where the StarLink TCP listener binds - independent port from the AVT110 one, default `5136` (Traccar's documented default for this protocol) |
+| `STARLINK_TCP_SOCKET_TIMEOUT_MS` / `STARLINK_TCP_MAX_BUFFER_BYTES` | Same idea as the AVT110 ones above, for the StarLink listener |
 
 ## HTTP API
 
@@ -129,20 +138,32 @@ verify the TCP ingest pipeline is working, not as a production API surface.
   *all* devices, newest first (a live event feed).
 - `GET /tracker/events/unread?limit=` - polling alternative to the SNS
   push (see below): returns domain events (`tracker.device.connected`/
-  `disconnected`/`tracker.report.received`) not yet fetched by a consumer,
-  oldest first (default 100, max 500), and **marks them delivered as a
-  side effect of the call** - a repeat call only returns what's new since
-  the last poll. Prefer the SNS/SQS path if you need at-least-once
-  delivery without risking a dropped HTTP response losing events.
+  `disconnected`/`tracker.report.received`/`starlink.*`) not yet fetched
+  by a consumer, oldest first (default 100, max 500), and **marks them
+  delivered as a side effect of the call** - a repeat call only returns
+  what's new since the last poll. Prefer the SNS/SQS path if you need
+  at-least-once delivery without risking a dropped HTTP response losing
+  events.
+
+StarLink has the same shape of endpoints under `/starlink` instead of
+`/tracker`: `GET /starlink/devices`,
+`GET /starlink/devices/:deviceId/reports?limit=&from=&to=`,
+`GET /starlink/monitor/overview`, `GET /starlink/monitor/events?limit=`.
+`deviceId` is what the unit reports on the wire (6 hex chars or a 15-digit
+IMEI) - there's no separate `/starlink/events/unread`, both protocols
+share the one `/tracker/events/unread` outbox (see below).
 
 ## Cross-service events
 
 Every `tracker.device.connected`/`disconnected`/`tracker.report.received`
-domain event is fanned out two ways (see
-`TrackerEventPublisherService`): a best-effort push to an SNS topic
+and `starlink.device.connected`/`disconnected`/`starlink.report.received`
+domain event is fanned out two ways (see `TrackerEventPublisherService`,
+which handles both protocols' events): a best-effort push to an SNS topic
 (`SNS_TOPIC_ARN`), and a durable row in Postgres backing the
 `/tracker/events/unread` endpoint above. Both carry the same versioned
-envelope: `{ eventType, version, occurredAt, imei, data }`.
+envelope: `{ eventType, version, occurredAt, imei, data }` (`imei` holds
+the StarLink `deviceId` for StarLink events - it's really just a "device
+identifier" column, named for where it originated).
 
 ## Architecture
 
@@ -150,14 +171,22 @@ envelope: `{ eventType, version, occurredAt, imei, data }`.
 src/
   config/            @nestjs/config setup + Joi validation schema
   database/           TypeORM (Postgres) module, CLI data-source, migrations
-  tracker/
+  tracker/             AVT110 protocol (binary, '#'-terminated)
     parser/           Pure, dependency-free frame decoder (TrackerParserService)
     tcp/               net.createServer listener + per-socket frame buffering
                         + in-memory "who's connected" registry
     persistence/       TypeORM repository access (devices + reports)
     events/            @nestjs/event-emitter event names/payloads
-    entities/          TrackerDevice / TrackerReport
+    publishing/        Fans tracker.*/starlink.* events out to SNS + outbox
+    entities/          TrackerDevice / TrackerReport / TrackerEvent
     tracker.controller.ts
+  starlink/            ERM/StarLink "SLU" protocol (text, newline-terminated)
+    parser/           Pure, dependency-free frame decoder (StarlinkParserService)
+    tcp/               Same shape as tracker/tcp, on its own port
+    persistence/       TypeORM repository access (devices + reports)
+    events/            @nestjs/event-emitter event names/payloads
+    entities/          StarlinkDevice / StarlinkReport
+    starlink.controller.ts
 ```
 
 Key design choices:
@@ -167,9 +196,14 @@ Key design choices:
   deliberately does **not** use `@nestjs/microservices`'s TCP transport -
   that transport speaks Nest's own JSON-RPC-ish wire format, which has
   nothing to do with the AVT110's `#`-terminated ASCII/hex frames.
-- **Framing**: each socket accumulates bytes in a `TrackerFrameSplitter`
-  and extracts complete frames by scanning for the `#` (0x23) terminator,
-  as the protocol specifies. See the "known limitations" note below.
+- **Framing**: each socket accumulates bytes in a `TrackerFrameSplitter`,
+  which derives each frame's exact length from its head token + `Length`
+  field rather than scanning for the `#` (0x23) terminator - that byte can
+  legitimately appear inside a frame's binary section (e.g. as part of an
+  IMEI or a coordinate), so a naive scan-for-`#` splitter can cut a frame
+  in half. It only falls back to scanning for `#` to resync after a
+  genuinely corrupt/desynced stream. StarLink's `StarlinkLineSplitter` is
+  simpler (plain newline-delimited text, no such ambiguity).
 - **Parsing** (`TrackerParserService`) is pure and synchronous - no network
   or DB access - so it's cheap to unit test (see
   `tracker-parser.service.spec.ts`). It's designed to never throw for
@@ -205,22 +239,32 @@ Key design choices:
   there's no outbound command feature yet to correlate them with.
 - **`+LDP`/`+BMR` (large data packets / device-manager reports)** are
   recognised by head token only; their data zones aren't decoded yet.
-- **Frame splitting scans raw bytes for `0x23`** ('#'), per the protocol
-  doc. Since `+RPT`/`+HBD` frames are otherwise binary, a data byte
-  (part of an IMEI, coordinate, cell ID, ...) can coincidentally equal
-  `0x23` and split a frame in the wrong place. When that happens the
-  resulting fragment fails to parse; `TrackerTcpServer` catches that,
-  logs it, and discards just that one frame rather than crashing. A
-  length-prefixed reader driven by the frame's own `Length` field would
-  remove this edge case entirely if it's ever observed causing real data
-  loss.
 - **No per-device SACK-enabled tracking** - see "Acknowledgements" above.
 - **No auth** on the HTTP API.
+
+### StarLink-specific
+
+No official protocol PDF was available (ERM's protocol pages require a
+login) - `StarlinkParserService` is reverse-derived from Traccar's
+open-source, production `StarLinkProtocolDecoder`. Known gaps:
+
+- **Checksum is matched but not verified** - no public source describes
+  the algorithm, and Traccar's own decoder doesn't validate it either.
+- **Only message type 6 (event report) is decoded**; other types
+  (protocol version, programming ack, ...) are recognised but not parsed.
+- **Only the default 23-tag format is decoded** - per-device custom
+  format strings (a real StarLink feature) aren't supported. Anything
+  outside the default format shows up in `report.unsupportedTags`.
+- **No acknowledgement is sent back** to the device, matching Traccar's
+  observed behavior for this protocol - worth verifying against a real
+  unit if messages ever appear to be retransmitted.
+- A handful of tags Traccar supports aren't implemented here (base64
+  1-wire sensor protobuf blobs, RFID reads, fuel sensors, ...).
 
 ## Testing
 
 ```bash
-pnpm test          # unit tests (includes TrackerParserService + TrackerFrameSplitter)
+pnpm test          # unit tests (parsers, framers, persistence, publishing)
 pnpm run test:cov   # with coverage
 pnpm run test:e2e   # HTTP e2e scaffold
 ```
@@ -230,6 +274,13 @@ pnpm run test:e2e   # HTTP e2e scaffold
 data, a `+HBD` heartbeat, a truncated/corrupt `+RPT` (asserts the parser
 recovers gracefully instead of throwing), and a `+RPT` with an
 intentionally-unsupported `Data Mask` bit set.
+
+`StarlinkParserService`'s tests (see `starlink/parser/test-fixtures.ts`)
+cover: an event-report frame with the full default tag format, the
+ignition-on/off special-cased event ids, both device-id formats (6 hex /
+15-digit IMEI), an unsupported message type, extra fields beyond the
+default format, and a corrupt field value (asserts it degrades to a
+warning instead of throwing).
 
 ## Useful commands
 
