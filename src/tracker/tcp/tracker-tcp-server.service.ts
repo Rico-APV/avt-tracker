@@ -99,6 +99,7 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
     // Populated once we've decoded a frame from this socket and learned
     // which device it is; a socket always belongs to exactly one IMEI.
     let imei: string | undefined;
+    let bytesReceived = 0;
 
     this.logger.log(`New TCP connection from ${peer}`);
 
@@ -131,6 +132,13 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
     };
 
     socket.on('data', (chunk: Buffer) => {
+      bytesReceived += chunk.length;
+      if (tracker.logRawMessages) {
+        this.logger.log(
+          `RAW CHUNK <- ${peer} (imei=${imei ?? 'unknown'}, ${chunk.length} bytes): ${chunk.toString('hex')}`,
+        );
+      }
+
       let frames: Buffer[];
       let overflowed: boolean;
       try {
@@ -169,12 +177,14 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
 
     socket.on('close', () => {
       if (!imei) {
-        this.logger.log(`Connection closed for ${peer} (imei=unknown)`);
+        this.logger.log(
+          `Connection closed for ${peer} (imei=unknown, ${bytesReceived} bytes received total)`,
+        );
         return;
       }
       this.registry.unregister(imei);
       this.logger.log(
-        `Connection closed for ${peer} (imei=${imei}) ` +
+        `Connection closed for ${peer} (imei=${imei}, ${bytesReceived} bytes received total) ` +
           `(${this.registry.connectedCount} device(s) connected now)`,
       );
       void this.persistence

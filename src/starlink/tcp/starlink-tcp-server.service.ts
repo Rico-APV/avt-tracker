@@ -97,6 +97,7 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
     // Populated once we've decoded a line from this socket and learned
     // which device it is; a socket always belongs to exactly one device.
     let deviceId: string | undefined;
+    let bytesReceived = 0;
 
     this.logger.log(`New StarLink TCP connection from ${peer}`);
 
@@ -129,6 +130,13 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
     };
 
     socket.on('data', (chunk: Buffer) => {
+      bytesReceived += chunk.length;
+      if (starlink.logRawMessages) {
+        this.logger.log(
+          `RAW CHUNK <- ${peer} (device=${deviceId ?? 'unknown'}, ${chunk.length} bytes): ${chunk.toString('hex')} (text: ${chunk.toString('utf8')})`,
+        );
+      }
+
       let lines: string[];
       let overflowed: boolean;
       try {
@@ -167,12 +175,14 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
 
     socket.on('close', () => {
       if (!deviceId) {
-        this.logger.log(`Connection closed for ${peer} (device=unknown)`);
+        this.logger.log(
+          `Connection closed for ${peer} (device=unknown, ${bytesReceived} bytes received total)`,
+        );
         return;
       }
       this.registry.unregister(deviceId);
       this.logger.log(
-        `Connection closed for ${peer} (device=${deviceId}) ` +
+        `Connection closed for ${peer} (device=${deviceId}, ${bytesReceived} bytes received total) ` +
           `(${this.registry.connectedCount} device(s) connected now)`,
       );
       void this.persistence
