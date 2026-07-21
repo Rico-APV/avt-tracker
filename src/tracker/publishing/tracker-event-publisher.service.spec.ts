@@ -39,7 +39,7 @@ function buildOutbox(): {
   service: TrackerEventOutboxService;
   record: jest.Mock;
 } {
-  const record = jest.fn().mockResolvedValue(undefined);
+  const record = jest.fn().mockResolvedValue({ id: 'test-outbox-id' });
   return {
     service: { record } as unknown as TrackerEventOutboxService,
     record,

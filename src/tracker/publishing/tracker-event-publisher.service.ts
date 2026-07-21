@@ -142,6 +142,11 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
 
     void this.outbox
       .record(eventType, imei, data, occurredAt)
+      .then((saved) =>
+        this.logger.log(
+          `Recorded ${eventType} in outbox for IMEI ${imei} (outbox id=${saved.id})`,
+        ),
+      )
       .catch((error: unknown) =>
         this.logger.error(
           `Failed to record ${eventType} in outbox for IMEI ${imei}: ${errorMessage(error)}`,
@@ -158,6 +163,9 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
     occurredAt: Date,
   ): Promise<void> {
     if (!this.client || !this.topicArn) {
+      this.logger.debug(
+        `Skipped SNS publish of ${eventType} for IMEI ${imei}: SNS_TOPIC_ARN not configured.`,
+      );
       return;
     }
 
@@ -170,7 +178,7 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
     };
 
     try {
-      await this.client.send(
+      const result = await this.client.send(
         new PublishCommand({
           TopicArn: this.topicArn,
           Message: JSON.stringify(envelope),
@@ -180,9 +188,12 @@ export class TrackerEventPublisherService implements OnModuleDestroy {
           },
         }),
       );
+      this.logger.log(
+        `Published ${eventType} for IMEI ${imei} to SNS ${this.topicArn} (MessageId=${result.MessageId})`,
+      );
     } catch (error) {
       this.logger.error(
-        `Failed to publish ${eventType} for IMEI ${imei}: ${errorMessage(error)}`,
+        `Failed to publish ${eventType} for IMEI ${imei} to SNS ${this.topicArn}: ${errorMessage(error)}`,
       );
     }
   }
