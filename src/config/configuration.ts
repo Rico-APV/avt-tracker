@@ -15,12 +15,16 @@ export interface AppConfig {
     tcpPort: number;
     socketTimeoutMs: number;
     maxBufferBytes: number;
+    /** Logs every raw frame + its parsed result - noisy, opt-in only. */
+    logRawMessages: boolean;
   };
   starlink: {
     tcpHost: string;
     tcpPort: number;
     socketTimeoutMs: number;
     maxBufferBytes: number;
+    /** Logs every raw line + its parsed result - noisy, opt-in only. */
+    logRawMessages: boolean;
   };
   notifications: {
     awsRegion: string;
@@ -55,6 +59,8 @@ export default (): AppConfig => ({
       process.env.TRACKER_TCP_MAX_BUFFER_BYTES ?? '65536',
       10,
     ),
+    logRawMessages:
+      (process.env.TRACKER_TCP_LOG_MESSAGES ?? 'false') === 'true',
   },
   starlink: {
     tcpHost: process.env.STARLINK_TCP_HOST ?? '0.0.0.0',
@@ -69,6 +75,8 @@ export default (): AppConfig => ({
       process.env.STARLINK_TCP_MAX_BUFFER_BYTES ?? '8192',
       10,
     ),
+    logRawMessages:
+      (process.env.STARLINK_TCP_LOG_MESSAGES ?? 'false') === 'true',
   },
   notifications: {
     awsRegion: process.env.AWS_REGION ?? 'us-east-2',

@@ -157,6 +157,28 @@ describe('StarlinkParserService', () => {
     ).toBe(true);
   });
 
+  it('never lets a garbage numeric field silently become null - it warns instead', () => {
+    // Regression test: parseInt/parseFloat return NaN (not an exception) on
+    // garbage input, and NaN serializes to `null` in JSON - so without an
+    // explicit NaN check, a corrupt field would be indistinguishable from
+    // one the device simply didn't send.
+    const data = buildEventReportData({ eid: '6', vbat: 'ACME' });
+    const parsed = parser.parseFrame(
+      buildStarlinkLine({
+        deviceId: TEST_DEVICE_ID,
+        messageType: 6,
+        messageIndex: 1,
+        data,
+      }),
+    );
+
+    expect(parsed.report?.batteryVoltage).toBeUndefined();
+    expect(parsed.report?.eventId).toBe(6);
+    expect(
+      parsed.warnings.some((w) => w.includes('Failed to decode tag #VBAT#')),
+    ).toBe(true);
+  });
+
   it('throws for a line that does not match the frame format at all', () => {
     expect(() => parser.parseFrame('not a starlink frame')).toThrow();
   });

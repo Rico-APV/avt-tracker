@@ -50,7 +50,17 @@
       "Bash(pnpm dlx *)",
       "Bash(docker rmi *)",
       "Bash(gh --version)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(sed -i \"s|<RDS_ENDPOINT>|avt-tracker-db.cphj0ns5j3k3.us-east-2.rds.amazonaws.com|g\" .aws/task-definition.json)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('.aws/task-definition.json','utf8'\\)\\); console.log\\('JSON valido'\\)\")",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('.aws/task-definition.json','utf8'\\)\\); console.log\\('task-definition.json OK'\\)\")",
+      "Bash(node --check scripts/simulate-device.js)",
+      "Bash(echo \"started with pid $!\")",
+      "Bash(cd \"c:\\\\Users\\\\Angel Rico\\\\Documents\\\\APV\\\\systems\\\\avt\" && tail -n 40 /tmp/avt-dev.log; echo \"---\"; ps aux | grep -i node | grep -v grep)",
+      "Bash(kill 1676 1677)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\ANGELR~1\\AppData\\Local\\Temp\\claude\\c--Users-Angel-Rico-Documents-APV-systems-avt\\5446fd51-4135-4777-9c28-e1771fd9994e\\scratchpad"

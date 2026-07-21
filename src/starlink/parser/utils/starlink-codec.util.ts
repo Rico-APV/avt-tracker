@@ -1,4 +1,27 @@
 /**
+ * `parseInt`/`parseFloat` silently return `NaN` for garbage input instead
+ * of throwing, which would otherwise let a corrupt field flow through as
+ * if it were merely absent (NaN serializes to `null` in JSON, making it
+ * indistinguishable from "not present"). These throw instead, so a bad
+ * value surfaces as a decode warning like every other malformed field.
+ */
+export function parseStrictInt(value: string): number {
+  const result = parseInt(value, 10);
+  if (Number.isNaN(result)) {
+    throw new Error(`Not an integer: "${value}"`);
+  }
+  return result;
+}
+
+export function parseStrictFloat(value: string): number {
+  const result = parseFloat(value);
+  if (Number.isNaN(result)) {
+    throw new Error(`Not a number: "${value}"`);
+  }
+  return result;
+}
+
+/**
  * `#EDT#`/`#PDT#` timestamps are `yyMMddHHmmss` (12 digits), UTC - matches
  * Traccar's default `PROTOCOL_DATE_FORMAT` for this protocol.
  */

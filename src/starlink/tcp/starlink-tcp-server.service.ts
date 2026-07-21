@@ -122,7 +122,10 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
         STARLINK_EVENTS.DEVICE_CONNECTED,
         new StarlinkDeviceConnectedEvent(deviceId, remoteAddress, remotePort),
       );
-      this.logger.log(`Identified connection ${peer} as device ${deviceId}`);
+      this.logger.log(
+        `Identified connection ${peer} as device ${deviceId} ` +
+          `(${this.registry.connectedCount} device(s) connected now)`,
+      );
     };
 
     socket.on('data', (chunk: Buffer) => {
@@ -163,13 +166,15 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
     });
 
     socket.on('close', () => {
-      this.logger.log(
-        `Connection closed for ${peer} (device=${deviceId ?? 'unknown'})`,
-      );
       if (!deviceId) {
+        this.logger.log(`Connection closed for ${peer} (device=unknown)`);
         return;
       }
       this.registry.unregister(deviceId);
+      this.logger.log(
+        `Connection closed for ${peer} (device=${deviceId}) ` +
+          `(${this.registry.connectedCount} device(s) connected now)`,
+      );
       void this.persistence
         .markDeviceDisconnected(deviceId)
         .catch((error) =>
@@ -198,6 +203,11 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
     peer: string,
     registerDevice: (deviceId: string) => void,
   ): void {
+    const starlink = this.configService.get('starlink', { infer: true });
+    if (starlink.logRawMessages) {
+      this.logger.log(`RAW <- ${peer}: ${line}`);
+    }
+
     let parsed: ParsedStarlinkFrame;
     try {
       parsed = this.parser.parseFrame(line);
@@ -206,6 +216,10 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
         `Discarding unparseable line from ${peer}: ${errorMessage(error)}`,
       );
       return;
+    }
+
+    if (starlink.logRawMessages) {
+      this.logger.log(`PARSED <- ${peer}: ${JSON.stringify(parsed)}`);
     }
 
     const { header } = parsed;

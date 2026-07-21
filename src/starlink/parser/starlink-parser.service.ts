@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   parseStarlinkCoordinate,
   parseStarlinkDateTime,
+  parseStrictFloat,
+  parseStrictInt,
 } from './utils/starlink-codec.util';
 import {
   getStarlinkAlarm,
@@ -162,7 +164,7 @@ export class StarlinkParserService {
         payload.deviceTime = parseStarlinkDateTime(value);
         break;
       case '#EID#': {
-        const eventId = parseInt(value, 10);
+        const eventId = parseStrictInt(value);
         payload.eventId = eventId;
         payload.eventName = getStarlinkEventName(eventId);
         payload.alarm = getStarlinkAlarm(eventId);
@@ -183,44 +185,44 @@ export class StarlinkParserService {
         payload.longitude = parseStarlinkCoordinate(value);
         break;
       case '#SPD#':
-        payload.speedKnots = parseFloat(value);
+        payload.speedKnots = parseStrictFloat(value);
         break;
       case '#HEAD#':
-        payload.course = parseInt(value, 10);
+        payload.course = parseStrictInt(value);
         break;
       case '#ODO#':
-        payload.odometerM = Math.round(parseFloat(value) * 1000);
+        payload.odometerM = Math.round(parseStrictFloat(value) * 1000);
         break;
       case '#IN1#':
       case '#IN2#':
       case '#IN3#':
       case '#IN4#':
-        payload.digitalInputs[tag.slice(1, -1)] = parseInt(value, 10);
+        payload.digitalInputs[tag.slice(1, -1)] = parseStrictInt(value);
         break;
       case '#OUT1#':
       case '#OUT2#':
       case '#OUT3#':
       case '#OUT4#':
-        payload.digitalOutputs[tag.slice(1, -1)] = parseInt(value, 10);
+        payload.digitalOutputs[tag.slice(1, -1)] = parseStrictInt(value);
         break;
       case '#LAC#':
-        payload.lac = parseInt(value, 10);
+        payload.lac = parseStrictInt(value);
         break;
       case '#CID#':
-        payload.cid = parseInt(value, 10);
+        payload.cid = parseStrictInt(value);
         break;
       case '#VIN#':
-        payload.mainPowerVoltage = parseFloat(value);
+        payload.mainPowerVoltage = parseStrictFloat(value);
         break;
       case '#VBAT#':
-        payload.batteryVoltage = parseFloat(value);
+        payload.batteryVoltage = parseStrictFloat(value);
         break;
       case '#DEST#':
         payload.destination = value;
         break;
       case '#IGN#':
       case '#ENG#':
-        payload.ignition = parseInt(value, 10) > 0;
+        payload.ignition = parseStrictInt(value) > 0;
         break;
       default:
         payload.unsupportedTags.push(tag);

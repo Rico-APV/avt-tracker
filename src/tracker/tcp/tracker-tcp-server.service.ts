@@ -124,7 +124,10 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
         TRACKER_EVENTS.DEVICE_CONNECTED,
         new TrackerDeviceConnectedEvent(imei, remoteAddress, remotePort),
       );
-      this.logger.log(`Identified connection ${peer} as IMEI ${imei}`);
+      this.logger.log(
+        `Identified connection ${peer} as IMEI ${imei} ` +
+          `(${this.registry.connectedCount} device(s) connected now)`,
+      );
     };
 
     socket.on('data', (chunk: Buffer) => {
@@ -165,13 +168,15 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
     });
 
     socket.on('close', () => {
-      this.logger.log(
-        `Connection closed for ${peer} (imei=${imei ?? 'unknown'})`,
-      );
       if (!imei) {
+        this.logger.log(`Connection closed for ${peer} (imei=unknown)`);
         return;
       }
       this.registry.unregister(imei);
+      this.logger.log(
+        `Connection closed for ${peer} (imei=${imei}) ` +
+          `(${this.registry.connectedCount} device(s) connected now)`,
+      );
       void this.persistence
         .markDeviceDisconnected(imei)
         .catch((error) =>
@@ -197,6 +202,11 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
     peer: string,
     registerDevice: (imei: string) => void,
   ): void {
+    const tracker = this.configService.get('tracker', { infer: true });
+    if (tracker.logRawMessages) {
+      this.logger.log(`RAW <- ${peer}: ${frame.toString('hex')}`);
+    }
+
     let parsed: ParsedTrackerFrame;
     try {
       parsed = this.parser.parseFrame(frame);
@@ -205,6 +215,10 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
         `Discarding unparseable frame from ${peer} (${frame.length} bytes): ${errorMessage(error)}`,
       );
       return;
+    }
+
+    if (tracker.logRawMessages) {
+      this.logger.log(`PARSED <- ${peer}: ${JSON.stringify(parsed)}`);
     }
 
     const { header } = parsed;
