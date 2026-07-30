@@ -18,15 +18,17 @@ import {
 } from './starlink-parser.types';
 
 /**
- * `.SLU<deviceId>,<type>,<index>,<data...>*<XX>` - one arbitrary head byte,
- * literal "SLU", device id (6 hex chars or a 15-digit IMEI), then
+ * `[<head>]SLU<deviceId>,<type>,<index>,<data...>*<XX>` - an OPTIONAL single
+ * arbitrary head byte (some units prefix a byte such as '.' or '!' before
+ * "SLU", others send none at all - both have been observed from real
+ * devices), literal "SLU", device id (6 hex chars or a 15-digit IMEI), then
  * comma-separated type/index/data, a literal '*', and a 2-hex-digit
  * checksum. Framing (splitting the TCP stream into lines) is deliberately
  * NOT this class's job - see `StarlinkLineSplitter`; this only ever parses
  * one already-delimited line.
  */
 const FRAME_PATTERN =
-  /^.SLU([0-9A-Fa-f]{6}|\d{15}),(\d+),(\d+),(.+)\*([0-9A-Fa-f]{2})$/;
+  /^(.)?SLU([0-9A-Fa-f]{6}|\d{15}),(\d+),(\d+),(.+)\*([0-9A-Fa-f]{2})$/;
 
 /**
  * Stateless decoder for the "SLU" text protocol used by ERM/StarLink
@@ -63,14 +65,21 @@ export class StarlinkParserService {
     if (!match) {
       throw new Error(
         `Line does not match the "SLU" frame format (expected ` +
-          `".SLU<id>,<type>,<index>,<data>*<XX>"): ${trimmed.slice(0, 80)}`,
+          `"[<head>]SLU<id>,<type>,<index>,<data>*<XX>"): ${trimmed.slice(0, 80)}`,
       );
     }
 
-    const [, deviceId, messageTypeRaw, messageIndexRaw, data, checksumHex] =
-      match;
+    const [
+      ,
+      head,
+      deviceId,
+      messageTypeRaw,
+      messageIndexRaw,
+      data,
+      checksumHex,
+    ] = match;
     const header: StarlinkFrameHeader = {
-      head: trimmed.charAt(0),
+      head: head ?? '',
       deviceId,
       messageType: parseInt(messageTypeRaw, 10),
       messageIndex: parseInt(messageIndexRaw, 10),

@@ -6,8 +6,10 @@
  * no official spec PDF was available to work from directly.
  *
  * Wire format (one line per message, '\n'-terminated):
- *   <head><1 char>SLU<deviceId>,<type>,<index>,<data...>*<checksum 2 hex>
+ *   [<head><1 char>]SLU<deviceId>,<type>,<index>,<data...>*<checksum 2 hex>
  * e.g. "!SLU123456,6,42,241205153000,6,,,,,,,,,,,,,,,,,,*A3"
+ * The head byte is optional - some real units omit it entirely, sending
+ * "SLU..." directly.
  */
 /** The only message type this parser currently decodes field-by-field. */
 export const STARLINK_EVENT_REPORT_MESSAGE_TYPE = 6;
@@ -46,7 +48,7 @@ export const DEFAULT_STARLINK_FORMAT_TAGS = [
 ] as const;
 
 export interface StarlinkFrameHeader {
-  /** The single arbitrary character preceding "SLU" (protocol head byte). */
+  /** The single arbitrary character preceding "SLU", or '' when the unit sent none. */
   head: string;
   /** 6 hex chars or a 15-digit IMEI, per the device. */
   deviceId: string;

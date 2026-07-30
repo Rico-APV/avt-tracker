@@ -92,6 +92,21 @@ describe('StarlinkParserService', () => {
     expect(off.report?.ignition).toBe(false);
   });
 
+  it('parses a frame with no head byte at all (some real units omit it)', () => {
+    // Regression test: a real device sent lines starting directly with "SLU"
+    // (no arbitrary byte before it), which the frame regex used to require
+    // and reject as unparseable.
+    const line =
+      `SLU${TEST_DEVICE_ID},6,7043,` +
+      `${buildEventReportData({ eid: '6' })}*4B`;
+
+    const parsed = parser.parseFrame(line);
+
+    expect(parsed.header.head).toBe('');
+    expect(parsed.header.deviceId).toBe(TEST_DEVICE_ID);
+    expect(parsed.report?.eventId).toBe(6);
+  });
+
   it('supports the 15-digit IMEI form of the device id', () => {
     const parsed = parser.parseFrame(
       buildStarlinkLine({
