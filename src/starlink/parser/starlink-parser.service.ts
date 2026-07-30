@@ -46,16 +46,22 @@ const FRAME_PATTERN =
  *   the algorithm, and Traccar's own decoder doesn't validate it either.
  * - Only message type 6 (event report) is decoded; other types (protocol
  *   version, programming ack, etc.) are recognised but not parsed.
- * - Per-device custom format strings aren't supported - only the default
- *   23-tag format is decoded; anything else shows up as `unsupportedTags`.
  * - A handful of tags Traccar supports (base64-encoded 1-wire sensor
  *   protobuf blobs, RFID reads, fuel sensors, ...) aren't implemented.
+ *
+ * The tag format IS configurable per deployment (real fleets often omit
+ * tags they don't have hardware for, e.g. digital I/O) - callers pass the
+ * tag list their device is actually configured with; it defaults to
+ * `DEFAULT_STARLINK_FORMAT_TAGS` (Traccar's own default) when omitted.
  */
 @Injectable()
 export class StarlinkParserService {
   private readonly logger = new Logger(StarlinkParserService.name);
 
-  parseFrame(line: string): ParsedStarlinkFrame {
+  parseFrame(
+    line: string,
+    formatTags: readonly string[] = DEFAULT_STARLINK_FORMAT_TAGS,
+  ): ParsedStarlinkFrame {
     const trimmed = line.trim();
     if (trimmed.length === 0) {
       throw new Error('Cannot parse an empty line');
@@ -96,7 +102,7 @@ export class StarlinkParserService {
 
     if (header.messageType === STARLINK_EVENT_REPORT_MESSAGE_TYPE) {
       try {
-        parsed.report = this.parseEventReport(data, warnings);
+        parsed.report = this.parseEventReport(data, warnings, formatTags);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         warnings.push(`Failed to decode event report data: ${message}`);
@@ -118,6 +124,7 @@ export class StarlinkParserService {
   private parseEventReport(
     data: string,
     warnings: string[],
+    formatTags: readonly string[],
   ): StarlinkReportPayload {
     const fields = data.split(',');
     const payload: StarlinkReportPayload = {
@@ -126,16 +133,13 @@ export class StarlinkParserService {
       unsupportedTags: [],
     };
 
-    const fieldCount = Math.min(
-      fields.length,
-      DEFAULT_STARLINK_FORMAT_TAGS.length,
-    );
+    const fieldCount = Math.min(fields.length, formatTags.length);
     for (let i = 0; i < fieldCount; i++) {
       const value = fields[i];
       if (value === '') {
         continue;
       }
-      const tag = DEFAULT_STARLINK_FORMAT_TAGS[i];
+      const tag = formatTags[i];
       try {
         this.applyTag(tag, value, payload);
       } catch (error) {
@@ -146,11 +150,10 @@ export class StarlinkParserService {
       }
     }
 
-    if (fields.length > DEFAULT_STARLINK_FORMAT_TAGS.length) {
+    if (fields.length > formatTags.length) {
       warnings.push(
-        `Data has ${fields.length} fields but only the first ` +
-          `${DEFAULT_STARLINK_FORMAT_TAGS.length} (default format) are decoded; ` +
-          'extra fields ignored.',
+        `Data has ${fields.length} fields but the configured format only ` +
+          `has ${formatTags.length}; extra fields ignored.`,
       );
     }
 

@@ -1,3 +1,5 @@
+import { DEFAULT_STARLINK_FORMAT_TAGS } from '../starlink/parser/starlink-parser.types';
+
 export interface AppConfig {
   port: number;
   database: {
@@ -25,6 +27,12 @@ export interface AppConfig {
     maxBufferBytes: number;
     /** Logs every raw line + its parsed result - noisy, opt-in only. */
     logRawMessages: boolean;
+    /**
+     * Positional tag list for the event-report data zone. Real units
+     * configure this out-of-band and it varies per fleet (e.g. omitting
+     * digital I/O tags if unused) - see StarlinkParserService docs.
+     */
+    reportFormatTags: string[];
   };
   notifications: {
     awsRegion: string;
@@ -77,6 +85,9 @@ export default (): AppConfig => ({
     ),
     logRawMessages:
       (process.env.STARLINK_TCP_LOG_MESSAGES ?? 'false') === 'true',
+    reportFormatTags: process.env.STARLINK_REPORT_FORMAT
+      ? process.env.STARLINK_REPORT_FORMAT.split(',')
+      : [...DEFAULT_STARLINK_FORMAT_TAGS],
   },
   notifications: {
     awsRegion: process.env.AWS_REGION ?? 'us-east-2',

@@ -220,7 +220,7 @@ export class StarlinkTcpServer implements OnModuleInit, OnModuleDestroy {
 
     let parsed: ParsedStarlinkFrame;
     try {
-      parsed = this.parser.parseFrame(line);
+      parsed = this.parser.parseFrame(line, starlink.reportFormatTags);
     } catch (error) {
       this.logger.warn(
         `Discarding unparseable line from ${peer}: ${errorMessage(error)}`,

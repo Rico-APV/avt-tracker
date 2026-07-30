@@ -32,6 +32,9 @@ export const validationSchema = Joi.object({
     .truthy('true')
     .falsy('false')
     .default(false),
+  // Comma-separated tag list, e.g. "#EDT#,#EID#,#PDT#,...". Left optional -
+  // unset means "use the built-in default (Traccar's own default format)".
+  STARLINK_REPORT_FORMAT: Joi.string().optional().allow(''),
 
   AWS_REGION: Joi.string().default('us-east-2'),
   // Left optional: unset in local dev, the publisher just no-ops.

@@ -107,6 +107,47 @@ describe('StarlinkParserService', () => {
     expect(parsed.report?.eventId).toBe(6);
   });
 
+  it('accepts a custom format tag list, for fleets that omit tags (e.g. no digital I/O)', () => {
+    // Regression test with a real production line: this fleet's units are
+    // configured with only 14 fields (no #IN1#-#OUT4# block), so with the
+    // default 23-tag format LAC/CID/voltages were being mislabeled as
+    // digital I/O. Confirmed against real values: LAC=562 and CID=45128966
+    // are far too large to be digital I/O, but fit LAC/CID perfectly; the
+    // trailing 12.169/04.020 match a 12V vehicle supply + a ~4V backup
+    // battery far better than boolean-ish inputs.
+    const noDigitalIoFormat = [
+      '#EDT#',
+      '#EID#',
+      '#PDT#',
+      '#LAT#',
+      '#LONG#',
+      '#SPD#',
+      '#HEAD#',
+      '#ODO#',
+      '#LAC#',
+      '#CID#',
+      '#VIN#',
+      '#VBAT#',
+      '#IGN#',
+      '#ENG#',
+    ];
+    const line =
+      'SLU022C2F,06,7043,260726184420,01,260726184416,+1852.9260,' +
+      '-09909.2547,000.0,165,000000,562,45128966,12.169,04.020,1,2*4B';
+
+    const parsed = parser.parseFrame(line, noDigitalIoFormat);
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.header.deviceId).toBe('022C2F');
+    expect(parsed.report?.lac).toBe(562);
+    expect(parsed.report?.cid).toBe(45128966);
+    expect(parsed.report?.mainPowerVoltage).toBe(12.169);
+    expect(parsed.report?.batteryVoltage).toBe(4.02);
+    expect(parsed.report?.ignition).toBe(true);
+    expect(parsed.report?.digitalInputs).toEqual({});
+    expect(parsed.report?.digitalOutputs).toEqual({});
+  });
+
   it('supports the 15-digit IMEI form of the device id', () => {
     const parsed = parser.parseFrame(
       buildStarlinkLine({

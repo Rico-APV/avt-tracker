@@ -120,6 +120,7 @@ See [`.env.example`](.env.example) for the full list with defaults. Summary:
 | `TRACKER_TCP_MAX_BUFFER_BYTES` | Safety cap on the per-connection receive buffer before it's assumed desynced and dropped |
 | `STARLINK_TCP_HOST` / `STARLINK_TCP_PORT` | Where the StarLink TCP listener binds - independent port from the AVT110 one, default `5136` (Traccar's documented default for this protocol) |
 | `STARLINK_TCP_SOCKET_TIMEOUT_MS` / `STARLINK_TCP_MAX_BUFFER_BYTES` | Same idea as the AVT110 ones above, for the StarLink listener |
+| `STARLINK_REPORT_FORMAT` | Comma-separated tag list overriding the built-in default event-report format - see "StarLink-specific" below |
 
 ## HTTP API
 
@@ -252,9 +253,15 @@ open-source, production `StarLinkProtocolDecoder`. Known gaps:
   the algorithm, and Traccar's own decoder doesn't validate it either.
 - **Only message type 6 (event report) is decoded**; other types
   (protocol version, programming ack, ...) are recognised but not parsed.
-- **Only the default 23-tag format is decoded** - per-device custom
-  format strings (a real StarLink feature) aren't supported. Anything
-  outside the default format shows up in `report.unsupportedTags`.
+- **The tag format is configurable but global, not per-device** -
+  `STARLINK_REPORT_FORMAT` (comma-separated tags) overrides the built-in
+  23-tag default for every StarLink unit this instance talks to. Real
+  fleets often configure a shorter format out-of-band (e.g. omitting the
+  `#IN1#`-`#OUT4#` digital I/O block if unused) - a mismatch doesn't
+  crash anything, but silently mislabels fields (a real production case:
+  `LAC`/`CID`/two voltages were decoded as `IN1`-`IN4` until the format
+  was corrected). Anything outside the configured format shows up in
+  `report.unsupportedTags` rather than being dropped silently.
 - **No acknowledgement is sent back** to the device, matching Traccar's
   observed behavior for this protocol - worth verifying against a real
   unit if messages ever appear to be retransmitted.
