@@ -242,6 +242,27 @@ aws elbv2 describe-load-balancers --load-balancer-arns $NLB_ARN \
   --query 'LoadBalancers[0].DNSName' --output text
 ```
 
+**NLB (StarLink TCP) - same NLB, second listener + target group:**
+
+```bash
+STARLINK_TG_ARN=$(aws elbv2 create-target-group --name avt-tracker-starlink-tg \
+  --protocol TCP --port 5136 --vpc-id $VPC_ID --target-type ip \
+  --health-check-protocol TCP \
+  --query 'TargetGroups[0].TargetGroupArn' --output text)
+
+aws elbv2 create-listener --load-balancer-arn $NLB_ARN \
+  --protocol TCP --port 5136 \
+  --default-actions Type=forward,TargetGroupArn=$STARLINK_TG_ARN
+```
+
+Don't forget the security group also needs an inbound rule for 5136 (mirrors
+the one for 6001):
+
+```bash
+aws ec2 authorize-security-group-ingress \
+  --group-id $TASK_SG --protocol tcp --port 5136 --cidr 0.0.0.0/0
+```
+
 ## 8. CloudWatch log group
 
 Skippable - the task definition sets `"awslogs-create-group": "true"`, so
@@ -271,7 +292,7 @@ TASK_DEF_ARN=$(aws ecs register-task-definition \
   --query 'taskDefinition.taskDefinitionArn' --output text)
 ```
 
-## 10. Create the ECS service (both load balancers, one task)
+## 10. Create the ECS service (all three load balancers, one task)
 
 ```bash
 aws ecs create-service \
@@ -283,8 +304,35 @@ aws ecs create-service \
   --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_A,$SUBNET_B],securityGroups=[$TASK_SG],assignPublicIp=ENABLED}" \
   --load-balancers \
       "targetGroupArn=$HTTP_TG_ARN,containerName=avt-tracker,containerPort=3000" \
-      "targetGroupArn=$TCP_TG_ARN,containerName=avt-tracker,containerPort=6001"
+      "targetGroupArn=$TCP_TG_ARN,containerName=avt-tracker,containerPort=6001" \
+      "targetGroupArn=$STARLINK_TG_ARN,containerName=avt-tracker,containerPort=5136"
 ```
+
+**Important gotcha, learned the hard way**: a service's `--load-balancers`
+are fixed at creation time - there is no `update-service` flag to add or
+remove one from a running service (the ECS Console's "Create Service"
+wizard also only lets you pick one load balancer type at all, which is
+why this whole service is created via CLI). If you ever need to add
+another port/target-group to an already-running service, the only way is:
+
+```bash
+# 1. Capture the exact current config first (don't guess/lose anything):
+aws ecs describe-services --cluster avt-tracker-cluster \
+  --services avt-tracker-service \
+  --query 'services[0].{loadBalancers:loadBalancers,networkConfiguration:networkConfiguration,taskDefinition:taskDefinition}'
+
+# 2. Delete it (--force since it has running tasks) and wait:
+aws ecs delete-service --cluster avt-tracker-cluster \
+  --service avt-tracker-service --force
+aws ecs wait services-inactive --cluster avt-tracker-cluster \
+  --services avt-tracker-service
+
+# 3. Recreate with the create-service command above, now including
+#    every load balancer entry (old ones + the new one).
+```
+
+This is exactly how the StarLink target group (port 5136) was added after
+the service already existed with just HTTP + AVT110 TCP.
 
 Repeat steps 7-10 with an `-qa` suffix on every resource name if you want
 a fully separate `develop`-branch environment (matching
