@@ -76,6 +76,29 @@ describe('TrackerFrameSplitter', () => {
     expect(frames).toEqual([goodFrame]);
   });
 
+  it('recovers frame boundaries when the declared Length lies (seen in the wild)', () => {
+    // Reproduces a real device sending <Length> = the frame's TOTAL size
+    // (head+length+body+terminator) instead of the spec-mandated
+    // IMEI+DeviceID+DataZone+GTime+SN size. Trusting that value would eat
+    // into the next frame's head token and desync every frame after it.
+    const splitter = new TrackerFrameSplitter();
+    const correct = hbdFrame(1);
+    const bodyOnlyLength = correct.length - '+HBD:'.length - 2 - 1;
+    const malformed = buildFrame({
+      head: '+HBD:',
+      imei: TEST_IMEI,
+      dataZone: HBD_DATA_ZONE,
+      generatedAt: new Date(Date.UTC(2026, 6, 7, 12, 34, 56)),
+      serialNumber: 2,
+      declaredLengthOverride: correct.length - bodyOnlyLength, // total size, not body size
+    });
+    const f3 = hbdFrame(3);
+
+    const { frames } = splitter.push(Buffer.concat([malformed, f3]));
+
+    expect(frames).toEqual([malformed, f3]);
+  });
+
   it('drops the buffer instead of growing unboundedly when no valid frame ever resolves', () => {
     const splitter = new TrackerFrameSplitter(16);
 

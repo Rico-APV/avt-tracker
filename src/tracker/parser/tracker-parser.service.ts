@@ -65,6 +65,8 @@ export class TrackerParserService {
   private readonly logger = new Logger(TrackerParserService.name);
 
   parseFrame(frame: Buffer): ParsedTrackerFrame {
+    this.logger.debug(`Parsing frame: ${toHex(frame)}`);
+
     if (frame.length === 0) {
       throw new Error('Cannot parse an empty frame');
     }
