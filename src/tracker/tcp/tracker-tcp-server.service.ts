@@ -90,7 +90,11 @@ export class TrackerTcpServer implements OnModuleInit, OnModuleDestroy {
   }
 
   private handleConnection(socket: net.Socket): void {
+    this.logger.debug(
+      `New TCP connection from ${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? '?'} `,
+    );
     const tracker = this.configService.get('tracker', { infer: true });
+    this.logger.debug(`Tracker config: ${JSON.stringify(tracker)}`);
     const remoteAddress = socket.remoteAddress;
     const remotePort = socket.remotePort;
     const peer = `${remoteAddress ?? 'unknown'}:${remotePort ?? '?'}`;
