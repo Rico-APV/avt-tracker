@@ -79,3 +79,40 @@ export function decodeExtendedHms(bytes: Buffer): number {
 export function toHex(bytes: Buffer): string {
   return bytes.toString('hex').toUpperCase();
 }
+
+const DTC_CATEGORY_LETTERS = ['P', 'C', 'B', 'U'] as const;
+
+/**
+ * Decodes a 3-byte OBD-II/SAE J2012 diagnostic trouble code, per the
+ * <DTC> bit layout in section 3.2.1 (CAN Info Mask 2, bit 24):
+ *   byte0: C1 (bits 7-6, category) | C2 (bits 5-4, digit 0-3) | C3 (bits 3-0, hex digit)
+ *   byte1: C4 (bits 7-4, hex digit) | C5 (bits 3-0, hex digit)
+ *   byte2: bit2 = permanent (T), bit1 = pending (P), bit0 = confirmed (C)
+ * Verified against both worked examples in the protocol doc:
+ *   [0x02, 0x2E, 0x03] -> "P022E", pending + confirmed
+ *   [0x61, 0x99, 0x02] -> "C2199", pending
+ */
+export function decodeDtcCode(bytes: Buffer): {
+  code: string;
+  permanent: boolean;
+  pending: boolean;
+  confirmed: boolean;
+} {
+  if (bytes.length !== 3) {
+    throw new Error(`DTC field must be 3 bytes, got ${bytes.length}`);
+  }
+  const [byte0, byte1, byte2] = bytes;
+
+  const category = DTC_CATEGORY_LETTERS[(byte0 >> 6) & 0x3];
+  const digit2 = ((byte0 >> 4) & 0x3).toString(16).toUpperCase();
+  const digit3 = (byte0 & 0xf).toString(16).toUpperCase();
+  const digit4 = ((byte1 >> 4) & 0xf).toString(16).toUpperCase();
+  const digit5 = (byte1 & 0xf).toString(16).toUpperCase();
+
+  return {
+    code: `${category}${digit2}${digit3}${digit4}${digit5}`,
+    permanent: (byte2 & 0x4) !== 0,
+    pending: (byte2 & 0x2) !== 0,
+    confirmed: (byte2 & 0x1) !== 0,
+  };
+}

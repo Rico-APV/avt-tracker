@@ -15,6 +15,11 @@ function i32(value: number): Buffer {
   b.writeInt32BE(value, 0);
   return b;
 }
+function u32(value: number): Buffer {
+  const b = Buffer.alloc(4);
+  b.writeUInt32BE(value, 0);
+  return b;
+}
 
 const TEST_IMEI = '356938035643809';
 const TEST_GENERATED_AT = new Date(Date.UTC(2026, 6, 7, 12, 34, 56)); // 2026-07-07T12:34:56Z
@@ -174,7 +179,7 @@ describe('TrackerParserService', () => {
     expect(() => parser.parseFrame(garbage)).toThrow();
   });
 
-  it('flags Data Mask bits it does not decode (e.g. CAN Info Mask 1, bit 9) without crashing', () => {
+  it('flags Data Mask bits it does not decode (e.g. Electric CAN Info Mask, bit 11) without crashing', () => {
     const tail = Buffer.concat([
       u16(4000), // battery voltage
       u8(80), // battery level
@@ -183,7 +188,7 @@ describe('TrackerParserService', () => {
     const dataZone = buildReportDataZone({
       eventType: 24, // CANBUS Info Event
       eventState: 0,
-      dataMask: (1 << 2) | (1 << 9), // battery + CAN Info Mask 1 (unsupported)
+      dataMask: (1 << 2) | (1 << 11), // battery + Electric CAN Info Mask (unsupported)
       tail,
     });
 
@@ -201,11 +206,158 @@ describe('TrackerParserService', () => {
       voltageMv: 4000,
       levelPercent: 80,
     });
-    expect(parsed.report?.unsupportedDataMaskBits).toEqual([9]);
+    expect(parsed.report?.unsupportedDataMaskBits).toEqual([11]);
     expect(
       parsed.warnings.some((w) => w.includes('Data Mask bits not decoded')),
     ).toBe(true);
     // The full data zone is still preserved for reprocessing later.
     expect(parsed.dataZoneHex.length).toBeGreaterThan(0);
+  });
+
+  it('parses CAN Info Mask 1 (VIN, ignition, speed, RPM, fuel level)', () => {
+    const canMask1 = (1 << 0) | (1 << 1) | (1 << 5) | (1 << 6) | (1 << 9);
+    const vin = 'WVWZZZ1JZXW000001';
+    const canTail = Buffer.concat([
+      u32(canMask1),
+      u8(vin.length),
+      Buffer.from(vin, 'ascii'), // bit 0: VIN
+      u8(2), // bit 1: ignition key (2 = engine on)
+      u16(87), // bit 5: vehicle speed (km/h)
+      u16(1850), // bit 6: engine RPM
+      u8(45), // bit 9: fuel level liters
+      u8(150), // bit 9: fuel level percent raw (*0.4 => 60%)
+    ]);
+
+    const dataZone = buildReportDataZone({
+      eventType: 24,
+      eventState: 0,
+      dataMask: 1 << 9, // CAN Info Mask 1 only
+      tail: canTail,
+    });
+
+    const frame = buildFrame({
+      head: '+RPT:',
+      imei: TEST_IMEI,
+      dataZone,
+      generatedAt: TEST_GENERATED_AT,
+      serialNumber: 0x0011,
+    });
+
+    const parsed = parser.parseFrame(frame);
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.report?.canInfo1).toEqual({
+      mask: canMask1,
+      vin,
+      ignitionKey: 2,
+      vehicleSpeedKmh: 87,
+      engineRpm: 1850,
+      fuelLevel: { liters: 45, percent: 60 },
+      unsupportedBits: [],
+    });
+  });
+
+  it('parses CAN Info Mask 2 (DTC codes and tyre readings)', () => {
+    const canMask2 = (1 << 24) | (1 << 29);
+    const canTail = Buffer.concat([
+      u32(canMask2),
+      // bit 24: 2 DTC codes - [0x02,0x2E,0x03] "P022E" pending+confirmed,
+      // and [0x61,0x99,0x02] "C2199" pending.
+      u8(2),
+      Buffer.from([0x02, 0x2e, 0x03]),
+      Buffer.from([0x61, 0x99, 0x02]),
+      // bit 29: 1 tyre reading - axle 0, wheel 1, 800 kPa, 25.5C, state OK.
+      u8(1),
+      Buffer.from([0x01]), // location byte: axle=0 (high nibble), wheel=1 (low nibble)
+      u16(800),
+      Buffer.from([0x00, 0x09, 0xf6]), // 3-byte temperature *0.01C = 2550 -> 25.5
+      u8(0),
+    ]);
+
+    const dataZone = buildReportDataZone({
+      eventType: 24,
+      eventState: 0,
+      dataMask: 1 << 10, // CAN Info Mask 2 only
+      tail: canTail,
+    });
+
+    const frame = buildFrame({
+      head: '+RPT:',
+      imei: TEST_IMEI,
+      dataZone,
+      generatedAt: TEST_GENERATED_AT,
+      serialNumber: 0x0012,
+    });
+
+    const parsed = parser.parseFrame(frame);
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.report?.canInfo2).toEqual({
+      mask: canMask2,
+      dtcCodes: [
+        { code: 'P022E', permanent: false, pending: true, confirmed: true },
+        { code: 'C2199', permanent: false, pending: true, confirmed: false },
+      ],
+      tyres: [
+        {
+          axlePosition: 0,
+          wheelPosition: 1,
+          pressureKpa: 800,
+          temperatureC: 25.5,
+          state: 0,
+        },
+      ],
+      unsupportedBits: [],
+    });
+  });
+
+  it('decodes repeated PEO fence records inside an ASCII "-ALL:" frame', () => {
+    // Real frame captured from a device: a "-ALL:" head (UNKNOWN kind, since
+    // only "+ALL" is a recognised token) whose ASCII data zone lists 3 PEO
+    // fences (14, 15, 16); the last one is cut short by the frame's own
+    // declared-length mismatch.
+    const hex =
+      '2D414C4C3A00F9562026074E50100124303130342C312C2C302C33302C302C' +
+      '50454F2C31342C302C312C332C302E3030303030302C302E3030303030302C' +
+      '302E3030303030302C302E3030303030302C302E3030303030302C302E3030' +
+      '303030302C302C302C33302C302C50454F2C31352C302C312C332C302E3030' +
+      '303030302C302E3030303030302C302E3030303030302C302E303030303030' +
+      '2C302E3030303030302C302E3030303030302C302C302C33302C302C50454F' +
+      '2C31362C302C312C332C302E3030303030302C302E3030303030302C302E30' +
+      '30303030302C302E3030303030302C302E30303030300' +
+      '7EA071F0C123A118A23';
+    const frame = Buffer.from(hex, 'hex');
+
+    const parsed = parser.parseFrame(frame);
+
+    expect(parsed.header.kind).toBe('UNKNOWN');
+    expect(parsed.header.headToken).toBe('-ALL:');
+    expect(parsed.warnings.some((w) => w.includes('Declared Length'))).toBe(
+      true,
+    );
+    expect(parsed.ascii?.commandKey).toBe('0104');
+
+    expect(parsed.ascii?.peoFences).toEqual([
+      expect.objectContaining({
+        peoId: 14,
+        mode: 0,
+        startPoint: 1,
+        endPoint: 3,
+        points: [
+          { longitude: 0, latitude: 0 },
+          { longitude: 0, latitude: 0 },
+          { longitude: 0, latitude: 0 },
+        ],
+        checkIntervalSeconds: 0,
+        overSpeedAlarmMode: 0,
+        overSpeedThresholdKmh: 30,
+        overSpeedDurationSeconds: 0,
+      }),
+      expect.objectContaining({ peoId: 15 }),
+    ]);
+    // Fence 16 was cut short by the truncated frame, so it's dropped rather
+    // than reported with fabricated/incomplete data.
+    expect(parsed.ascii?.peoFences).toHaveLength(2);
+    expect(parsed.warnings.some((w) => w.includes('PEO fence 16'))).toBe(true);
   });
 });

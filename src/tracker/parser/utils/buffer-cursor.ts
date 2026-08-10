@@ -86,4 +86,26 @@ export class BufferCursor {
     this._offset += 4;
     return value;
   }
+
+  /** Big-endian unsigned integer of arbitrary width (1-6 bytes). */
+  readUIntBE(byteLength: number): number {
+    this.ensure(byteLength);
+    const value = this.buf.readUIntBE(this._offset, byteLength);
+    this._offset += byteLength;
+    return value;
+  }
+
+  /** Big-endian signed integer of arbitrary width (1-6 bytes). */
+  readIntBE(byteLength: number): number {
+    this.ensure(byteLength);
+    const value = this.buf.readIntBE(this._offset, byteLength);
+    this._offset += byteLength;
+    return value;
+  }
+
+  /** A 1-byte length prefix followed by that many ASCII bytes. */
+  readLengthPrefixedAscii(): string {
+    const length = this.readUInt8();
+    return this.readBytes(length).toString('ascii');
+  }
 }

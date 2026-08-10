@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  decodeDtcCode,
   decodeExtendedHms,
   decodeGTime,
   decodeImei,
@@ -11,6 +12,9 @@ import { BufferCursor } from './utils/buffer-cursor';
 import { getEventTypeName } from './tracker-parser.constants';
 import {
   AsciiFrameData,
+  CanInfoMask1Block,
+  CanInfoMask2Block,
+  DtcCode,
   EventDataBlock,
   GnssBlock,
   GnssFix,
@@ -18,9 +22,12 @@ import {
   HeartbeatPayload,
   OneWireSensorReading,
   ParsedTrackerFrame,
+  PeoFencePoint,
+  PeoFenceStatus,
   TrackerFrameHeader,
   TrackerFrameKind,
   TrackerReportPayload,
+  TyreReading,
 } from './tracker-parser.types';
 
 /** Size (bytes) of the fixed header fields that precede the data zone. */
@@ -113,7 +120,7 @@ export class TrackerParserService {
             '(TODO); rawHex/dataZoneHex are still available for reprocessing.',
         );
       } else {
-        parsed.ascii = this.parseAsciiDataZone(dataZone);
+        parsed.ascii = this.parseAsciiDataZone(dataZone, warnings);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -224,10 +231,117 @@ export class TrackerParserService {
   // ASCII (+ACK / +QRY / +ALL / +VER / ...)
   // ---------------------------------------------------------------------
 
-  private parseAsciiDataZone(dataZone: Buffer): AsciiFrameData {
+  private parseAsciiDataZone(
+    dataZone: Buffer,
+    warnings: string[],
+  ): AsciiFrameData {
     const raw = dataZone.toString('ascii');
     const fields = raw.length > 0 ? raw.split(',') : [];
-    return { raw, fields, commandKey: fields[0] || undefined };
+    const ascii: AsciiFrameData = {
+      raw,
+      fields,
+      commandKey: fields[0] || undefined,
+    };
+
+    const peoFences = this.parsePeoFenceList(fields, warnings);
+    if (peoFences.length > 0) {
+      ascii.peoFences = peoFences;
+    }
+
+    return ascii;
+  }
+
+  /**
+   * Scans an ASCII field list for repeated `PEO,<id>,<mode>,<start>,<end>,
+   * <lon,lat>*N,<checkInterval>,<overSpeedAlarmMode>,<overSpeedThreshold>,
+   * <overSpeedDuration>` records and decodes them. See the field-order note
+   * on `PeoFenceStatus`.
+   */
+  private parsePeoFenceList(
+    fields: string[],
+    warnings: string[],
+  ): PeoFenceStatus[] {
+    const fences: PeoFenceStatus[] = [];
+
+    for (let i = 0; i < fields.length; i++) {
+      if (fields[i] !== 'PEO') {
+        continue;
+      }
+
+      const peoId = Number(fields[i + 1]);
+      const mode = Number(fields[i + 2]);
+      const startPoint = Number(fields[i + 3]);
+      const endPoint = Number(fields[i + 4]);
+      const pointCount = endPoint - startPoint + 1;
+
+      if (
+        !Number.isFinite(peoId) ||
+        !Number.isFinite(mode) ||
+        !Number.isFinite(startPoint) ||
+        !Number.isFinite(endPoint) ||
+        pointCount < 0
+      ) {
+        warnings.push(
+          `Could not parse PEO fence record at ASCII field ${i}: malformed id/mode/start/end.`,
+        );
+        break;
+      }
+
+      const points: PeoFencePoint[] = [];
+      let cursor = i + 5;
+      let truncated = false;
+      for (let p = 0; p < pointCount; p++) {
+        const longitude = Number(fields[cursor]);
+        const latitude = Number(fields[cursor + 1]);
+        if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+          warnings.push(
+            `PEO fence ${peoId} coordinates truncated at ASCII field ${cursor}; ` +
+              'only the fully received points are included.',
+          );
+          truncated = true;
+          break;
+        }
+        points.push({ longitude, latitude });
+        cursor += 2;
+      }
+      if (truncated) {
+        break;
+      }
+
+      const checkIntervalSeconds = Number(fields[cursor]);
+      const overSpeedAlarmMode = Number(fields[cursor + 1]);
+      const overSpeedThresholdKmh = Number(fields[cursor + 2]);
+      const overSpeedDurationSeconds = Number(fields[cursor + 3]);
+
+      if (
+        !Number.isFinite(checkIntervalSeconds) ||
+        !Number.isFinite(overSpeedAlarmMode) ||
+        !Number.isFinite(overSpeedThresholdKmh) ||
+        !Number.isFinite(overSpeedDurationSeconds)
+      ) {
+        warnings.push(
+          `PEO fence ${peoId} check-interval/over-speed fields truncated at ` +
+            `ASCII field ${cursor}.`,
+        );
+        break;
+      }
+
+      fences.push({
+        peoId,
+        mode,
+        startPoint,
+        endPoint,
+        points,
+        checkIntervalSeconds,
+        overSpeedAlarmMode,
+        overSpeedThresholdKmh,
+        overSpeedDurationSeconds,
+      });
+
+      i = cursor + 3;
+    }
+
+    return fences;
   }
 
   // ---------------------------------------------------------------------
@@ -302,12 +416,23 @@ export class TrackerParserService {
             payload.eventData = this.parseEventDataBlock(cursor, warnings);
             break;
           }
+          case 9: {
+            payload.canInfo1 = this.parseCanInfoMask1Block(cursor, warnings);
+            break;
+          }
+          case 10: {
+            payload.canInfo2 = this.parseCanInfoMask2Block(cursor, warnings);
+            break;
+          }
           default: {
-            // Bits 9-31 (CAN Info Mask 1/2/3, Electric CAN, UART1,
-            // Tachograph*, Special Car, NMEA2000, BLE, Upgrade Config)
-            // carry large nested structures (incl. variable-length VIN /
-            // registration-number strings) that are not decoded yet.
+            // Bits 11-31 (Electric CAN, UART1, Tachograph*, Special Car,
+            // NMEA2000, BLE, Upgrade Config, CAN Info Mask 3) carry large
+            // nested structures that are not decoded yet.
             // TODO: implement per docs/AVT110_Tracker_Protocol_6_01.pdf.
+            //
+            // Mobileye ADAS data (see mobileye-adas.types.ts) would also
+            // land somewhere in here once its AdvCAN PID -> bit mapping is
+            // known - it isn't documented in any CAN Info Mask above.
             payload.unsupportedDataMaskBits.push(bit);
             break;
           }
@@ -519,6 +644,298 @@ export class TrackerParserService {
     if (block.unsupportedBits.length > 0) {
       warnings.push(
         `Event Data Mask bits not decoded: [${block.unsupportedBits.join(', ')}]. TODO.`,
+      );
+    }
+
+    return block;
+  }
+
+  // ---------------------------------------------------------------------
+  // CAN Info Mask 1 / 2 (+RPT Data Mask bits 9 / 10)
+  // ---------------------------------------------------------------------
+
+  private parseCanInfoMask1Block(
+    cursor: BufferCursor,
+    warnings: string[],
+  ): CanInfoMask1Block {
+    const mask = cursor.readUInt32BE();
+    const block: CanInfoMask1Block = { mask, unsupportedBits: [] };
+
+    for (let bit = 0; bit <= 31; bit++) {
+      if (!(mask & (1 << bit))) {
+        continue;
+      }
+      try {
+        switch (bit) {
+          case 0:
+            block.vin = cursor.readLengthPrefixedAscii();
+            break;
+          case 1:
+            block.ignitionKey = cursor.readUInt8();
+            break;
+          case 2:
+            block.totalDistanceHm = cursor.readUInt32BE();
+            break;
+          case 3:
+            block.totalDistanceImpulses = cursor.readUInt32BE();
+            break;
+          case 4:
+            block.totalFuelUsedMl = cursor.readUInt32BE();
+            break;
+          case 5:
+            block.vehicleSpeedKmh = cursor.readUInt16BE();
+            break;
+          case 6:
+            block.engineRpm = cursor.readUInt16BE();
+            break;
+          case 7:
+            block.engineCoolantTemperatureC = cursor.readInt16BE();
+            break;
+          case 8:
+            block.fuelConsumption = {
+              litersPer100Km: cursor.readUInt16BE() * 0.1,
+              litersPerHour: cursor.readUInt16BE() * 0.05,
+            };
+            break;
+          case 9:
+            block.fuelLevel = {
+              liters: cursor.readUInt8(),
+              percent: cursor.readUInt8() * 0.4,
+            };
+            break;
+          case 10:
+            block.rangeKm = cursor.readUIntBE(3);
+            break;
+          case 11:
+            block.acceleratorPedalPressurePercent = cursor.readUInt8() * 0.4;
+            break;
+          case 12:
+            block.totalEngineHoursSeconds = cursor.readUInt32BE();
+            break;
+          case 13:
+            block.totalDrivingTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 14:
+            block.totalEngineIdleTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 15:
+            block.totalIdleFuelUsedMl = cursor.readUInt32BE();
+            break;
+          case 16:
+            block.axleWeight1Kg = cursor.readUInt16BE() * 0.5;
+            break;
+          case 17:
+            block.axleWeight2Kg = cursor.readUInt16BE() * 0.5;
+            break;
+          case 18:
+            block.axleWeight3Kg = cursor.readUInt16BE() * 0.5;
+            break;
+          case 19:
+            block.axleWeight4Kg = cursor.readUInt16BE() * 0.5;
+            break;
+          case 20:
+            block.detailedIndicators1 = cursor.readUInt32BE();
+            break;
+          case 21:
+            block.detailedIndicators2 = cursor.readUInt32BE();
+            break;
+          case 22:
+            block.lights = cursor.readUInt8();
+            break;
+          case 23:
+            block.doors = cursor.readUInt8();
+            break;
+          case 24:
+            block.totalVehicleOverspeedTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 25:
+            block.totalVehicleEngineOverspeedTimeSeconds =
+              cursor.readUInt32BE();
+            break;
+          case 26:
+            block.engineColdStartsCount = cursor.readUIntBE(3);
+            break;
+          case 27:
+            block.engineAllStartsCount = cursor.readUIntBE(3);
+            break;
+          case 28:
+            block.engineStartsByIgnitionCount = cursor.readUIntBE(3);
+            break;
+          case 29:
+            block.totalEngineColdRunningTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 30:
+            block.handbrakeAppliesDuringRideCount = cursor.readUInt16BE();
+            break;
+          default:
+            // Bit 31: reserved.
+            block.unsupportedBits.push(bit);
+            break;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `Stopped decoding CAN Info Mask 1 at bit ${bit}: ${message}.`,
+        );
+        break;
+      }
+    }
+
+    if (block.unsupportedBits.length > 0) {
+      warnings.push(
+        `CAN Info Mask 1 bits not decoded: [${block.unsupportedBits.join(', ')}].`,
+      );
+    }
+
+    return block;
+  }
+
+  private parseCanInfoMask2Block(
+    cursor: BufferCursor,
+    warnings: string[],
+  ): CanInfoMask2Block {
+    const mask = cursor.readUInt32BE();
+    const block: CanInfoMask2Block = { mask, unsupportedBits: [] };
+
+    for (let bit = 0; bit <= 31; bit++) {
+      if (!(mask & (1 << bit))) {
+        continue;
+      }
+      try {
+        switch (bit) {
+          case 0:
+            block.adBlueLevelPercent = cursor.readUInt8() * 0.4;
+            break;
+          case 1:
+            block.retarderUsagePercent = cursor.readUInt8();
+            break;
+          case 2:
+            block.powerMode = cursor.readUInt8();
+            break;
+          case 3:
+            block.axleWeight5Kg = cursor.readUInt16BE() * 0.5;
+            break;
+          case 4:
+            block.axleWeight6Kg = cursor.readUInt16BE() * 0.5;
+            break;
+          case 5:
+            block.axleWeight7Kg = cursor.readUInt16BE() * 0.5;
+            break;
+          case 6:
+            block.analogInputMv = cursor.readUInt16BE();
+            break;
+          case 7:
+            block.engineBrakingFactor = cursor.readUInt32BE();
+            break;
+          case 8:
+            block.pedalBrakingFactor = cursor.readUInt32BE();
+            break;
+          case 9:
+            block.totalAcceleratorKickdowns = cursor.readUIntBE(3);
+            break;
+          case 10:
+            block.totalEffectiveEngineSpeedTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 11:
+            block.totalCruiseControlTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 12:
+            block.totalAcceleratorKickdownTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 13:
+            block.totalBrakeApplications = cursor.readUIntBE(3);
+            break;
+          case 14:
+            block.oilTemperatureC = cursor.readInt16BE();
+            break;
+          case 15:
+            block.trailerVin = cursor.readLengthPrefixedAscii();
+            break;
+          case 16:
+          case 17:
+            // Reserved, no payload bytes.
+            break;
+          case 18:
+            block.registrationNumber = cursor.readLengthPrefixedAscii();
+            break;
+          case 19:
+            block.rapidBrakings = cursor.readUIntBE(3);
+            break;
+          case 20:
+            block.rapidAccelerations = cursor.readUIntBE(3);
+            break;
+          case 21:
+            block.engineTorquePercent = cursor.readUInt8() - 125;
+            break;
+          case 22:
+            block.serviceDistanceKm = cursor.readInt32BE();
+            break;
+          case 23:
+            block.ambientTemperatureC = cursor.readInt16BE();
+            break;
+          case 24: {
+            const dtcCount = cursor.readUInt8();
+            const dtcCodes: DtcCode[] = [];
+            for (let i = 0; i < dtcCount; i++) {
+              dtcCodes.push(decodeDtcCode(cursor.readBytes(3)));
+            }
+            block.dtcCodes = dtcCodes;
+            break;
+          }
+          case 25:
+            block.gaseousFuelLevel = {
+              liters: cursor.readUInt8(),
+              percent: cursor.readUInt8() * 0.4,
+            };
+            break;
+          case 26:
+            block.fuelLevelCombustion = {
+              liters: cursor.readUInt8(),
+              percent: cursor.readUInt8() * 0.4,
+            };
+            break;
+          case 27:
+            block.totalFuelFromVehicleMl = cursor.readUInt32BE();
+            break;
+          case 28:
+            block.totalGaseousFuelUsageKg = cursor.readUInt32BE() * 0.5;
+            break;
+          case 29: {
+            const tyreCount = cursor.readUInt8();
+            const tyres: TyreReading[] = [];
+            for (let i = 0; i < tyreCount; i++) {
+              const location = cursor.readUInt8();
+              tyres.push({
+                axlePosition: (location >> 4) & 0xf,
+                wheelPosition: location & 0xf,
+                pressureKpa: cursor.readUInt16BE(),
+                temperatureC: cursor.readUIntBE(3) * 0.01,
+                state: cursor.readUInt8(),
+              });
+            }
+            block.tyres = tyres;
+            break;
+          }
+          case 30:
+            block.timeToServiceDays = cursor.readUInt16BE() - 1000;
+            break;
+          default:
+            // Bit 31: reserved.
+            block.unsupportedBits.push(bit);
+            break;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `Stopped decoding CAN Info Mask 2 at bit ${bit}: ${message}.`,
+        );
+        break;
+      }
+    }
+
+    if (block.unsupportedBits.length > 0) {
+      warnings.push(
+        `CAN Info Mask 2 bits not decoded: [${block.unsupportedBits.join(', ')}].`,
       );
     }
 
