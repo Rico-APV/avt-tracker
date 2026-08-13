@@ -1,5 +1,6 @@
 import { TrackerParserService } from './tracker-parser.service';
 import { TrackerFrameKind } from './tracker-parser.types';
+import { MobileyeAdasEventType } from './mobileye-adas.types';
 import { buildFrame, buildReportDataZone } from './test-fixtures';
 
 function u8(value: number): Buffer {
@@ -179,7 +180,7 @@ describe('TrackerParserService', () => {
     expect(() => parser.parseFrame(garbage)).toThrow();
   });
 
-  it('flags Data Mask bits it does not decode (e.g. Electric CAN Info Mask, bit 11) without crashing', () => {
+  it('flags Data Mask bits it does not decode (e.g. Tachograph, bit 12) without crashing', () => {
     const tail = Buffer.concat([
       u16(4000), // battery voltage
       u8(80), // battery level
@@ -188,7 +189,7 @@ describe('TrackerParserService', () => {
     const dataZone = buildReportDataZone({
       eventType: 24, // CANBUS Info Event
       eventState: 0,
-      dataMask: (1 << 2) | (1 << 11), // battery + Electric CAN Info Mask (unsupported)
+      dataMask: (1 << 2) | (1 << 12), // battery + Tachograph (unsupported)
       tail,
     });
 
@@ -206,7 +207,7 @@ describe('TrackerParserService', () => {
       voltageMv: 4000,
       levelPercent: 80,
     });
-    expect(parsed.report?.unsupportedDataMaskBits).toEqual([11]);
+    expect(parsed.report?.unsupportedDataMaskBits).toEqual([12]);
     expect(
       parsed.warnings.some((w) => w.includes('Data Mask bits not decoded')),
     ).toBe(true);
@@ -359,5 +360,161 @@ describe('TrackerParserService', () => {
     // than reported with fabricated/incomplete data.
     expect(parsed.ascii?.peoFences).toHaveLength(2);
     expect(parsed.warnings.some((w) => w.includes('PEO fence 16'))).toBe(true);
+  });
+
+  it('parses a real CANBUS Info Event frame with an unconnected Mobileye unit (CAN Info Mask 2 + Electric Info Mask 1 + CAN Info Mask 3 + CAN Advanced Info Mask 1)', () => {
+    // Captured device frame; Data Mask 0x01800C01 sets bits 0 (frame),
+    // 10 (CAN Info Mask 2), 11 (Electric Info Mask 1), 23 (CAN Info Mask 3)
+    // and 24 (CAN Advanced Info Mask 1 - AdvCAN PID 1-8/Mobileye). Every
+    // AdvCAN PID reads back as the 0xFF "not available" sentinel, since no
+    // Mobileye unit was actually connected when this frame was captured.
+    const rawHex = [
+      '2B5250543A', // "+RPT:"
+      '009C', // declared length (mismatches actual frame size - see below)
+      '5620260 71D025807'.replace(' ', ''), // IMEI 863238072902887
+      '20', // device ID
+      '0602', // protocol version
+      '18', // event type 24 (CANBUS Info Event)
+      '13', // event state
+      '01800C01', // Data Mask: bits 0, 10, 11, 23, 24
+      '0202', // bit 0: frame count=2, id=2
+      '7FFCF000', // bit 10: CAN Info Mask 2
+      '00'.repeat(38),
+      'FFFF', // ...timeToServiceDays raw sentinel
+      '00001FFF', // bit 11: Electric Info Mask 1
+      '00'.repeat(31),
+      '0000011D', // bit 23: CAN Info Mask 3
+      '00000000',
+      '00000000',
+      '00000000',
+      '00000000',
+      '1F', // ...current gear number
+      '000000FF', // bit 24: CAN Advanced Info Mask 1 (AdvCAN PID 1-8)
+      '01FF'.repeat(8), // 8x (length=1, data=0xFF "not available")
+      '07EA080B141825', // generated time 2026-08-11T20:24:37Z
+      '40F6', // serial number
+      '23', // tail '#'
+    ].join('');
+    const frame = Buffer.from(rawHex, 'hex');
+
+    const parsed = parser.parseFrame(frame);
+
+    expect(parsed.header.imei).toBe('863238072902887');
+    expect(parsed.header.deviceId).toBe(0x20);
+    expect(parsed.header.serialNumberHex).toBe('40F6');
+    expect(parsed.header.generatedAt?.toISOString()).toBe(
+      new Date(Date.UTC(2026, 7, 11, 20, 24, 37)).toISOString(),
+    );
+
+    expect(parsed.report?.eventType).toBe(24);
+    expect(parsed.report?.dataMask).toBe(0x01800c01);
+    expect(parsed.report?.frame).toEqual({ count: 2, id: 2 });
+
+    expect(parsed.report?.canInfo2?.mask).toBe(0x7ffcf000);
+    expect(parsed.report?.canInfo2?.unsupportedBits).toEqual([]);
+
+    expect(parsed.report?.electricInfo1?.mask).toBe(0x00001fff);
+    expect(parsed.report?.electricInfo1?.unsupportedBits).toEqual([]);
+
+    expect(parsed.report?.canInfo3?.mask).toBe(0x0000011d);
+    expect(parsed.report?.canInfo3).toMatchObject({
+      totalRetarderUsageTimeSeconds: 0,
+      totalCo2EmissionKg: 0,
+      totalPtoUsageTimeSeconds: 0,
+      totalFuelUsedWithPtoEngagedMl: 0,
+      currentGearNumber: 0x1f,
+      unsupportedBits: [],
+    });
+
+    expect(parsed.report?.canAdvancedInfo1?.mask).toBe(0x000000ff);
+    expect(parsed.report?.canAdvancedInfo1?.pids).toHaveLength(8);
+    expect(
+      parsed.report?.canAdvancedInfo1?.pids.map((p) => ({
+        pid: p.pid,
+        data: p.data.toString('hex'),
+      })),
+    ).toEqual(
+      Array.from({ length: 8 }, (_, i) => ({ pid: i + 1, data: 'ff' })),
+    );
+
+    // AdvCAN PID 1 (Headway valid) reads back 0xFF, i.e. not the boolean
+    // value 1, so every derived flag is false rather than a false positive.
+    expect(parsed.report?.mobileyeAdas).toEqual({
+      headwayValid: false,
+      headwayMeasurementSeconds: 25.5,
+      pedestrianForwardCollisionWarning: false,
+      pedestrianInDangerZone: false,
+      laneDepartureWarningOff: false,
+      forwardCollisionWarningOn: false,
+      leftLaneDepartureWarningOn: false,
+      rightLaneDepartureWarningOn: false,
+    });
+    expect(parsed.report?.mobileyeAdasEvents).toEqual([]);
+
+    // Every Data Mask bit in this frame is now decoded; nothing left over.
+    expect(parsed.report?.unsupportedDataMaskBits).toEqual([]);
+    // The device's declared Length field (0x009C=156) doesn't match the
+    // actual frame size on this capture; parsing still succeeds by trusting
+    // actual bytes (see `parseHeader`), but the mismatch is surfaced.
+    expect(parsed.warnings.some((w) => w.includes('Declared Length'))).toBe(
+      true,
+    );
+  });
+
+  it('derives Mobileye ADAS events from CAN Advanced Info Mask 1 (AdvCAN PID 1-8) when a unit is actually connected', () => {
+    const pidMask = 0x000000ff; // PID 1-8 all present
+    const tail = Buffer.concat([
+      u32(pidMask),
+      u8(1),
+      u8(1), // PID 1: Headway valid = true
+      u8(1),
+      u8(25), // PID 2: Headway measurement = 25 * 0.1s = 2.5s
+      u8(1),
+      u8(0), // PID 3: Peds FCW = false
+      u8(1),
+      u8(1), // PID 4: Peds in DZ = true
+      u8(1),
+      u8(0), // PID 5: LDW off = false
+      u8(1),
+      u8(1), // PID 6: FCW on = true
+      u8(1),
+      u8(1), // PID 7: Left LDW on = true
+      u8(1),
+      u8(0), // PID 8: Right LDW on = false
+    ]);
+
+    const dataZone = buildReportDataZone({
+      eventType: 24,
+      eventState: 0,
+      dataMask: 1 << 24, // CAN Advanced Info Mask 1 only
+      tail,
+    });
+
+    const frame = buildFrame({
+      head: '+RPT:',
+      imei: TEST_IMEI,
+      dataZone,
+      generatedAt: TEST_GENERATED_AT,
+      serialNumber: 0x0013,
+    });
+
+    const parsed = parser.parseFrame(frame);
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.report?.mobileyeAdas).toEqual({
+      headwayValid: true,
+      headwayMeasurementSeconds: 2.5,
+      pedestrianForwardCollisionWarning: false,
+      pedestrianInDangerZone: true,
+      laneDepartureWarningOff: false,
+      forwardCollisionWarningOn: true,
+      leftLaneDepartureWarningOn: true,
+      rightLaneDepartureWarningOn: false,
+    });
+    expect(parsed.report?.mobileyeAdasEvents).toEqual([
+      MobileyeAdasEventType.LWDL,
+      MobileyeAdasEventType.FCW,
+      MobileyeAdasEventType.PEDESTRIAN_IN_DANGER_ZONE,
+    ]);
   });
 });

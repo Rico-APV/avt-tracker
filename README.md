@@ -227,14 +227,26 @@ Key design choices:
 
 ## Known limitations / TODOs
 
-- **Data Mask bits 9-31 are not decoded** (CAN Info Masks 1-3, Electric CAN,
-  UART1, Tachograph blocks, Special Car info, NMEA2000, BLE, Upgrade
-  Config). These carry large nested structures with variable-length
-  strings (VIN, registration number, driver names, ...) per the protocol
-  PDF. When present, the affected bits are listed in
+- **Data Mask bits 9-11, 23-24 are decoded** (CAN Info Mask 1/2, Electric
+  Info Mask 1, CAN Info Mask 3, and CAN Advanced Information Mask 1 - the
+  "AdvancedCAN"/AdvCAN PID feed a Mobileye ADAS unit is wired into, see
+  `mobileye-adas.types.ts`). The remaining bits (12-22, 25-31: UART1,
+  Tachograph blocks, Special Car info, NMEA2000, BLE, Upgrade Config) are
+  **not decoded yet**. These carry large nested structures with
+  variable-length strings (registration number, driver names, ...) per the
+  protocol PDF. When present, the affected bits are listed in
   `report.unsupportedDataMaskBits` and a warning is logged/stored, but the
   rest of the message still decodes normally and the full frame is kept
-  as `rawHex` for future reprocessing.
+  as `rawHex` for future reprocessing. Note: if an undecoded bit precedes a
+  decoded one in bit order within the same frame (e.g. an unimplemented bit
+  12-22 arriving before bit 23/24), decoding of everything after it in that
+  frame is unreliable, since we can't know how many bytes to skip for the
+  undecoded block - see the "Stopped decoding Data Mask" warning in that
+  case. Electric Info Mask 1's individual field boundaries (bit 11) are
+  inferred from this project's own naming conventions and only verified in
+  total byte length against one real sample where every field read as
+  zero - treat those specific values with caution until validated against
+  a frame with real battery data.
 - **`+ACK`/`+QRY`/`+ALL`/`+VER`/etc. (ASCII command-response frames) are
   parsed generically** (comma-split) but not persisted or acted upon -
   there's no outbound command feature yet to correlate them with.

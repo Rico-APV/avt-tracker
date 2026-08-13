@@ -5,23 +5,16 @@
  * AdvCAN PID 1-8: Headway valid, Headway measurement, Peds FCW, Peds in DZ,
  * LDW off, FCW on, Left LDW on, Right LDW on).
  *
- * STATUS: data model only, not wired up to any parser yet. The AVT110
- * Tracker Protocol R6.01 document does not mention Mobileye/ADAS anywhere -
- * no CAN Info Mask bit and no Special Car Model ID is documented for it (the
- * only Special Car Model IDs in that revision are 158/160/161, for the
- * e-GENSET and Multilift Ultima equipment). There is currently no confirmed
- * mapping from these AdvCAN PIDs onto a specific +RPT Data Mask / CAN Info
- * Mask field.
- *
- * TODO: wire `MobileyeAdasReading` into `TrackerParserService` (see the
- * `TrackerReportPayload.mobileyeAdas` field and the Data Mask bit 9-31
- * default case in `parseReportDataZone`) once either:
- *   - the CAN-Logistic configuration file referenced by the "Supported
- *     parameters" doc (which maps AdvCAN PIDs to specific CAN Info Mask
- *     fields for this device) becomes available, or
- *   - a real +RPT/-ALL frame captured from a vehicle with Mobileye
- *     connected is available to reverse-engineer the mapping against
- *     (the same way the PEO fence field order was confirmed above).
+ * Mapping confirmed 2026-08-13 by reverse-engineering a real +RPT frame
+ * (the AVT110 Tracker Protocol R6.01 document itself never mentions
+ * Mobileye/ADAS or an AdvCAN PID -> Data Mask bit mapping): AdvCAN PID N
+ * lands as the (N-1)-th bit of the "CAN Advanced Information Mask 1" block,
+ * which itself is +RPT Data Mask bit 24 - see
+ * `TrackerParserService.parseCanAdvancedInfoMask1Block`/
+ * `deriveMobileyeAdasReading` and `CanAdvancedInfoMask1Block` in
+ * `tracker-parser.types.ts`. Each present PID is a 1-byte length followed
+ * by that many bytes of data (1 byte for all of PID 1-8 today). An absent/
+ * disconnected Mobileye unit reports each PID byte as the sentinel `0xFF`.
  *
  * Naming is aligned with `TYPES_EVENTS_MOBILEYE` in scope-backend
  * (LWDL/LWDR/FCW/HCW) for cross-system consistency.

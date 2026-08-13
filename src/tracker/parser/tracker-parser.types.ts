@@ -1,4 +1,7 @@
-import { MobileyeAdasReading } from './mobileye-adas.types';
+import {
+  MobileyeAdasEventType,
+  MobileyeAdasReading,
+} from './mobileye-adas.types';
 
 /**
  * Frame "head" tokens as they appear literally on the wire, e.g. `+RPT:`.
@@ -207,6 +210,70 @@ export interface CanInfoMask2Block {
   unsupportedBits: number[];
 }
 
+/** +RPT Data Mask bit 23 (CAN Info Mask 3). See protocol section 3.2.1. */
+export interface CanInfoMask3Block {
+  mask: number;
+  totalRetarderUsageTimeSeconds?: number;
+  totalCo2EmissionKg?: number;
+  totalPtoUsageTimeSeconds?: number;
+  totalFuelUsedWithPtoEngagedMl?: number;
+  currentGearNumber?: number;
+  /** Bits (0-31) we recognised but stopped decoding at, or never modelled. */
+  unsupportedBits: number[];
+}
+
+/**
+ * +RPT Data Mask bit 11 (Electric Info Mask 1). Field boundaries below are
+ * inferred from this project's own naming conventions elsewhere in the
+ * protocol ("Total X" fields ~= 4-byte counters, "X Percent" fields ~=
+ * 1 byte * 0.4, temperatures ~= signed 2-byte) and cross-checked only
+ * against the TOTAL byte length of a single real +RPT sample where every
+ * field happened to read as zero. That confirms the overall 31-byte length
+ * (and therefore that whatever Data Mask bits follow, e.g. bit 23/24,
+ * realign correctly) but does NOT confirm individual field boundaries
+ * against any non-zero sample or vendor doc - treat these values with
+ * caution until validated against a frame with real battery data.
+ */
+export interface ElectricInfoMask1Block {
+  mask: number;
+  batteryInstantaneousVoltage?: number;
+  batteryChargingCyclesCount?: number;
+  totalEnergyRecuperated?: number;
+  batteryLevelPercent?: number;
+  chargingState?: number;
+  batteryTemperatureC?: number;
+  batteryChargingCurrent?: number;
+  batteryInstantaneousPower?: number;
+  batteryStateOfHealthPercent?: number;
+  totalEnergyUsed?: number;
+  totalEnergyUsedWhenIdling?: number;
+  totalEnergyCharged?: number;
+  onlyBatteryChargeLevelPercent?: number;
+  /** Bits (0-31) we recognised but stopped decoding at, or never modelled. */
+  unsupportedBits: number[];
+}
+
+/** A single length-prefixed AdvCAN PID reading inside a CAN Advanced Information Mask. */
+export interface CanAdvancedInfoPid {
+  /** 1-based AdvCAN PID number (mask bit index + 1). */
+  pid: number;
+  data: Buffer;
+}
+
+/**
+ * +RPT Data Mask bit 24 (CAN Advanced Information Mask 1) - the
+ * "AdvancedCAN"/AdvCAN PID feed described in "CAN-Logistic v3 Xon/Xoff
+ * protocol" section 8.2 and the "Mobileye integration through Advanced CAN"
+ * application note. Each set mask bit N carries one length-prefixed AdvCAN
+ * PID (N+1): a 1-byte length followed by that many bytes of raw data. See
+ * `mobileye-adas.types.ts` for how PIDs 1-8 (the currently documented
+ * Mobileye parameters) are interpreted.
+ */
+export interface CanAdvancedInfoMask1Block {
+  mask: number;
+  pids: CanAdvancedInfoPid[];
+}
+
 export interface EventDataBlock {
   mask: number;
   mainPowerVoltageMv?: number;
@@ -264,12 +331,17 @@ export interface TrackerReportPayload {
   eventData?: EventDataBlock;
   canInfo1?: CanInfoMask1Block;
   canInfo2?: CanInfoMask2Block;
+  canInfo3?: CanInfoMask3Block;
+  electricInfo1?: ElectricInfoMask1Block;
+  canAdvancedInfo1?: CanAdvancedInfoMask1Block;
   /**
-   * Never populated yet - see `mobileye-adas.types.ts` for why (no confirmed
-   * AdvCAN PID -> Data Mask bit mapping). Declared here so the field is
-   * ready once `parseReportDataZone` can decode it.
+   * Derived from `canAdvancedInfo1`'s AdvCAN PID 1-8 (see
+   * `mobileye-adas.types.ts`), populated whenever Data Mask bit 24 is
+   * present and carries PID 1 (Headway valid).
    */
   mobileyeAdas?: MobileyeAdasReading;
+  /** Discrete ADAS events derived from `mobileyeAdas`; see `deriveMobileyeAdasEvents`. */
+  mobileyeAdasEvents?: MobileyeAdasEventType[];
   /** Top-level Data Mask bits (>=9) that carry structures we don't decode yet (CAN bus, tachograph, BLE, ...). */
   unsupportedDataMaskBits: number[];
 }

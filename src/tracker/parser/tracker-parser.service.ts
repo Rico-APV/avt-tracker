@@ -11,10 +11,17 @@ import {
 import { BufferCursor } from './utils/buffer-cursor';
 import { getEventTypeName } from './tracker-parser.constants';
 import {
+  deriveMobileyeAdasEvents,
+  MobileyeAdasReading,
+} from './mobileye-adas.types';
+import {
   AsciiFrameData,
+  CanAdvancedInfoMask1Block,
   CanInfoMask1Block,
   CanInfoMask2Block,
+  CanInfoMask3Block,
   DtcCode,
+  ElectricInfoMask1Block,
   EventDataBlock,
   GnssBlock,
   GnssFix,
@@ -424,15 +431,37 @@ export class TrackerParserService {
             payload.canInfo2 = this.parseCanInfoMask2Block(cursor, warnings);
             break;
           }
+          case 11: {
+            payload.electricInfo1 = this.parseElectricInfoMask1Block(
+              cursor,
+              warnings,
+            );
+            break;
+          }
+          case 23: {
+            payload.canInfo3 = this.parseCanInfoMask3Block(cursor, warnings);
+            break;
+          }
+          case 24: {
+            const canAdvancedInfo1 = this.parseCanAdvancedInfoMask1Block(
+              cursor,
+              warnings,
+            );
+            payload.canAdvancedInfo1 = canAdvancedInfo1;
+            const mobileyeAdas =
+              this.deriveMobileyeAdasReading(canAdvancedInfo1);
+            if (mobileyeAdas) {
+              payload.mobileyeAdas = mobileyeAdas;
+              payload.mobileyeAdasEvents =
+                deriveMobileyeAdasEvents(mobileyeAdas);
+            }
+            break;
+          }
           default: {
-            // Bits 11-31 (Electric CAN, UART1, Tachograph*, Special Car,
-            // NMEA2000, BLE, Upgrade Config, CAN Info Mask 3) carry large
-            // nested structures that are not decoded yet.
+            // Bits 12-22, 25-31 (UART1, Tachograph*, Special Car, NMEA2000,
+            // BLE, Upgrade Config, ...) carry large nested structures that
+            // are not decoded yet.
             // TODO: implement per docs/AVT110_Tracker_Protocol_6_01.pdf.
-            //
-            // Mobileye ADAS data (see mobileye-adas.types.ts) would also
-            // land somewhere in here once its AdvCAN PID -> bit mapping is
-            // known - it isn't documented in any CAN Info Mask above.
             payload.unsupportedDataMaskBits.push(bit);
             break;
           }
@@ -940,5 +969,194 @@ export class TrackerParserService {
     }
 
     return block;
+  }
+
+  // ---------------------------------------------------------------------
+  // Electric Info Mask 1 / CAN Info Mask 3 (+RPT Data Mask bits 11 / 23)
+  // ---------------------------------------------------------------------
+
+  private parseElectricInfoMask1Block(
+    cursor: BufferCursor,
+    warnings: string[],
+  ): ElectricInfoMask1Block {
+    const mask = cursor.readUInt32BE();
+    const block: ElectricInfoMask1Block = { mask, unsupportedBits: [] };
+
+    for (let bit = 0; bit <= 31; bit++) {
+      if (!(mask & (1 << bit))) {
+        continue;
+      }
+      try {
+        switch (bit) {
+          case 0:
+            block.batteryInstantaneousVoltage = cursor.readUInt16BE();
+            break;
+          case 1:
+            block.batteryChargingCyclesCount = cursor.readUInt16BE();
+            break;
+          case 2:
+            block.totalEnergyRecuperated = cursor.readUInt32BE();
+            break;
+          case 3:
+            block.batteryLevelPercent = cursor.readUInt8() * 0.4;
+            break;
+          case 4:
+            block.chargingState = cursor.readUInt16BE();
+            break;
+          case 5:
+            block.batteryTemperatureC = cursor.readInt16BE();
+            break;
+          case 6:
+            block.batteryChargingCurrent = cursor.readUInt16BE() * 0.1;
+            break;
+          case 7:
+            block.batteryInstantaneousPower = cursor.readInt16BE();
+            break;
+          case 8:
+            block.batteryStateOfHealthPercent = cursor.readUInt8() * 0.4;
+            break;
+          case 9:
+            block.totalEnergyUsed = cursor.readUInt32BE();
+            break;
+          case 10:
+            block.totalEnergyUsedWhenIdling = cursor.readUInt32BE();
+            break;
+          case 11:
+            block.totalEnergyCharged = cursor.readUInt32BE();
+            break;
+          case 12:
+            block.onlyBatteryChargeLevelPercent = cursor.readUInt8() * 0.4;
+            break;
+          default:
+            block.unsupportedBits.push(bit);
+            break;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `Stopped decoding Electric Info Mask 1 at bit ${bit}: ${message}.`,
+        );
+        break;
+      }
+    }
+
+    if (block.unsupportedBits.length > 0) {
+      warnings.push(
+        `Electric Info Mask 1 bits not decoded: [${block.unsupportedBits.join(', ')}]; ` +
+          'any further Data Mask bits in this frame may be misaligned.',
+      );
+    }
+
+    return block;
+  }
+
+  private parseCanInfoMask3Block(
+    cursor: BufferCursor,
+    warnings: string[],
+  ): CanInfoMask3Block {
+    const mask = cursor.readUInt32BE();
+    const block: CanInfoMask3Block = { mask, unsupportedBits: [] };
+
+    for (let bit = 0; bit <= 31; bit++) {
+      if (!(mask & (1 << bit))) {
+        continue;
+      }
+      try {
+        switch (bit) {
+          case 0:
+            block.totalRetarderUsageTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 2:
+            block.totalCo2EmissionKg = cursor.readUInt32BE();
+            break;
+          case 3:
+            block.totalPtoUsageTimeSeconds = cursor.readUInt32BE();
+            break;
+          case 4:
+            block.totalFuelUsedWithPtoEngagedMl = cursor.readUInt32BE();
+            break;
+          case 8:
+            block.currentGearNumber = cursor.readUInt8();
+            break;
+          default:
+            block.unsupportedBits.push(bit);
+            break;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `Stopped decoding CAN Info Mask 3 at bit ${bit}: ${message}.`,
+        );
+        break;
+      }
+    }
+
+    if (block.unsupportedBits.length > 0) {
+      warnings.push(
+        `CAN Info Mask 3 bits not decoded: [${block.unsupportedBits.join(', ')}]; ` +
+          'any further Data Mask bits in this frame may be misaligned.',
+      );
+    }
+
+    return block;
+  }
+
+  // ---------------------------------------------------------------------
+  // CAN Advanced Information Mask 1 / Mobileye ADAS (+RPT Data Mask bit 24)
+  // ---------------------------------------------------------------------
+
+  private parseCanAdvancedInfoMask1Block(
+    cursor: BufferCursor,
+    warnings: string[],
+  ): CanAdvancedInfoMask1Block {
+    const mask = cursor.readUInt32BE();
+    const block: CanAdvancedInfoMask1Block = { mask, pids: [] };
+
+    for (let bit = 0; bit <= 31; bit++) {
+      if (!(mask & (1 << bit))) {
+        continue;
+      }
+      try {
+        const length = cursor.readUInt8();
+        const data = Buffer.from(cursor.readBytes(length));
+        block.pids.push({ pid: bit + 1, data });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `Stopped decoding CAN Advanced Info Mask 1 at AdvCAN PID ${bit + 1}: ${message}.`,
+        );
+        break;
+      }
+    }
+
+    return block;
+  }
+
+  /**
+   * Interprets AdvCAN PID 1-8 (see `mobileye-adas.types.ts`) off a decoded
+   * CAN Advanced Information Mask 1 block. Returns undefined when PID 1
+   * (Headway valid) isn't present, since that's the cheapest signal that
+   * this device's AdvCAN feed isn't configured for Mobileye at all.
+   */
+  private deriveMobileyeAdasReading(
+    block: CanAdvancedInfoMask1Block,
+  ): MobileyeAdasReading | undefined {
+    const byPid = new Map(block.pids.map((entry) => [entry.pid, entry.data]));
+    const pid1 = byPid.get(1);
+    if (!pid1 || pid1.length === 0) {
+      return undefined;
+    }
+    const byteOf = (pid: number): number => byPid.get(pid)?.[0] ?? 0;
+
+    return {
+      headwayValid: byteOf(1) === 1,
+      headwayMeasurementSeconds: byteOf(2) * 0.1,
+      pedestrianForwardCollisionWarning: byteOf(3) === 1,
+      pedestrianInDangerZone: byteOf(4) === 1,
+      laneDepartureWarningOff: byteOf(5) === 1,
+      forwardCollisionWarningOn: byteOf(6) === 1,
+      leftLaneDepartureWarningOn: byteOf(7) === 1,
+      rightLaneDepartureWarningOn: byteOf(8) === 1,
+    };
   }
 }
